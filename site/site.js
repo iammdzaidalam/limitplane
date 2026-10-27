@@ -53,6 +53,102 @@ function cells(el, n) {
 
 const el = (tag, cls, html) => Object.assign(document.createElement(tag), { className: cls, innerHTML: html })
 
+// globe: a dot sphere; every decision in this tab pings it, placed by a hash of the client id
+const globe = (() => {
+  const cv = $('#globe'), ctx = cv.getContext('2d'), pts = [], pings = [], N = 1200, GA = Math.PI * (3 - Math.sqrt(5))
+  for (let i = 0; i < N; i++) { const y = 1 - 2 * (i + .5) / N, r = Math.sqrt(1 - y * y); pts.push([Math.cos(i * GA) * r, y, Math.sin(i * GA) * r]) }
+  const css = getComputedStyle(document.documentElement), C = { ok: css.getPropertyValue('--ok'), warn: css.getPropertyValue('--warn'), bad: css.getPropertyValue('--bad') }
+  let rot = 0, tilt = -.35, w = 0, h = 0, dpr = 1, raf = 0, last = 0, drag = null
+  const g = { visible: false }
+  const proj = ([x, y, z]) => {
+    const c = Math.cos(rot), s = Math.sin(rot), X = x * c + z * s, Z = z * c - x * s, ct = Math.cos(tilt), st = Math.sin(tilt)
+    return [X, y * ct - Z * st, y * st + Z * ct]
+  }
+  function draw(now = performance.now()) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h)
+    const R = Math.min(w, h) * .42, cx = w / 2, cy = h / 2
+    ctx.fillStyle = getComputedStyle(cv).color
+    for (const p of pts) {
+      const [X, Y, Z] = proj(p)
+      ctx.globalAlpha = Z < 0 ? .12 : .3 + .6 * Z
+      ctx.fillRect(cx + X * R - .8, cy - Y * R - .8, 1.6, 1.6)
+    }
+    while (pings.length && !reduce.matches && now - pings[0].t > 2000) pings.shift()
+    for (const p of pings) {
+      const [X, Y, Z] = proj(p.v), x = cx + X * R, y = cy - Y * R, k = reduce.matches ? 0 : (now - p.t) / 2000
+      ctx.globalAlpha = (Z < 0 ? .25 : 1) * (1 - k)
+      ctx.fillStyle = ctx.strokeStyle = C[p.c]
+      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill()
+      if (k) { ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 3 + k * 16, 0, 7); ctx.stroke() }
+    }
+    ctx.globalAlpha = 1
+  }
+  const tick = now => {
+    raf = 0
+    if (!drag && !reduce.matches) rot += Math.min(now - last, 50) * .00012
+    last = now; draw(now)
+    if (g.visible && !document.hidden && !reduce.matches) raf = requestAnimationFrame(tick)
+  }
+  const start = () => { if (!raf && g.visible) { last = performance.now(); raf = requestAnimationFrame(tick) } }
+  const size = () => { dpr = Math.min(devicePixelRatio || 1, 2); w = cv.clientWidth; h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr; draw() }
+  new ResizeObserver(size).observe(cv)
+  new IntersectionObserver(es => { g.visible = es[0].isIntersecting; start() }).observe(cv)
+  document.addEventListener('visibilitychange', start)
+  reduce.addEventListener('change', start)
+  cv.onpointerdown = e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId) }
+  cv.onpointermove = e => {
+    if (!drag) return
+    rot += (e.clientX - drag[0]) * .008; tilt = Math.max(-1.2, Math.min(1.2, tilt + (e.clientY - drag[1]) * .005))
+    drag = [e.clientX, e.clientY]; draw()
+  }
+  cv.onpointerup = cv.onpointercancel = () => { drag = null }
+  g.ping = (id, c) => {
+    let a = 2166136261, b = 0
+    for (const ch of id) { a = Math.imul(a ^ ch.charCodeAt(0), 16777619); b = Math.imul(b ^ a, 2246822507) + 1 }
+    const lat = Math.asin(2 * ((a >>> 0) / 2 ** 32) - 1), lon = 2 * Math.PI * ((b >>> 0) / 2 ** 32)
+    pings.push({ v: [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)], c, t: performance.now() })
+    if (pings.length > 60) pings.shift()
+    if (reduce.matches && g.visible) draw(); else start()
+  }
+  return g
+})()
+
+let decisions = 0
+function emit(id, r) {
+  $('#count').textContent = fmt(++decisions)
+  globe.ping(id, r.status === 200 ? 'ok' : r.reason === 'burst' ? 'warn' : 'bad')
+}
+
+// anonymous clients (documentation IPs) on the free tier; three of them send too many AI calls
+{
+  const H = '/healthz', E = '/v1/embed', G = '/v1/generate'
+  const anon = Array.from({ length: 24 }, (_, i) => ({ id: `203.0.113.${(i * 37 + 11) % 254 + 1}`, g: gate('free'), p: [.7, .3, .3][i] ?? .05, paths: i < 3 ? [G] : [H, H, E, G] }))
+  setInterval(() => {
+    if (!globe.visible || document.hidden) return
+    for (const c of anon) if (Math.random() < c.p) emit(c.id, c.g.decide(c.paths[Math.random() * c.paths.length | 0], us()))
+  }, 200)
+}
+
+// clock
+{
+  const tick = () => { $('#clock').textContent = new Date().toISOString().slice(11, 19) + ' UTC' }
+  tick(); setInterval(tick, 1000)
+}
+
+// hero wordmark: sized to span the width, revealed in horizontal slices
+{
+  const wm = $('#wm'), h1 = wm.parentElement, B = 4
+  if (!reduce.matches) {
+    for (let i = 1; i < B; i++) wm.append(wm.firstElementChild.cloneNode(true))
+    ;[...wm.children].forEach((s, i) => {
+      s.style.clipPath = `inset(calc(${i * 100 / B}% - 1px) 0 calc(${100 - (i + 1) * 100 / B}% - 1px) 0)`
+      s.style.setProperty('--i', i); s.style.setProperty('--x', (i % 2 ? .3 : -.3) + 'em')
+    })
+  }
+  const fit = () => { h1.style.fontSize = '100px'; h1.style.fontSize = 100 * h1.clientWidth / wm.offsetWidth + 'px' }
+  fit(); document.fonts?.ready.then(fit); addEventListener('resize', fit)
+}
+
 // hero: simulated traffic against the free tier
 {
   const H = '/healthz', E = '/v1/embed', G = '/v1/generate', SEQ = [H, G, G, H, G, E, G, H, H, G, G, E]
@@ -61,6 +157,7 @@ const el = (tag, cls, html) => Object.assign(document.createElement(tag), { clas
   let i = 0, timer
   const step = (now = us()) => {
     const path = SEQ[i++ % SEQ.length], r = g.decide(path, now), post = path !== H
+    emit(g.c.id, r)
     log.prepend(el('li', '', `<span class="code ${r.status === 200 ? 'ok' : 'no'}">${r.status}</span><span class="p">${post ? 'POST' : 'GET'} ${path}</span><span class="${r.status === 200 ? '' : 'no'}">${r.status === 200 ? '-' + r.cost : 'burst'}</span>`))
     while (log.children.length > 5) log.lastChild.remove()
   }
@@ -129,6 +226,7 @@ const el = (tag, cls, html) => Object.assign(document.createElement(tag), { clas
 
   function send(method, path) {
     const r = g.decide(path, us())
+    emit(g.c.id, r)
     if (chips.firstChild.classList.contains('muted')) chips.replaceChildren()
     chips.prepend(el('li', '', `<b class="${r.status === 200 ? 'ok' : 'no'}">${r.status}</b>${path}<span class="muted">${r.status === 200 ? '-' + r.cost : r.reason}</span>`))
     while (chips.children.length > 14) chips.lastChild.remove()
@@ -205,17 +303,67 @@ const el = (tag, cls, html) => Object.assign(document.createElement(tag), { clas
 }
 
 // copy, theme
+const CHECK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>'
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); $('#toast').textContent = 'Copied to clipboard'; return true }
+  catch { $('#toast').textContent = 'Select the text and copy it'; return false }
+}
 $$('[data-copy]').forEach(b => b.onclick = async () => {
-  const label = b.textContent
-  try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = 'Copied'; $('#toast').textContent = 'Copied to clipboard' }
-  catch { b.textContent = 'Press Ctrl+C'; $('#toast').textContent = 'Select the text and copy it' }
-  setTimeout(() => { b.textContent = label }, 1500)
+  const html = b.innerHTML, ok = await copy(document.getElementById(b.dataset.copy).textContent)
+  b.innerHTML = b.classList.contains('icon') ? (ok ? CHECK : '!') : ok ? 'Copied' : 'Press Ctrl+C'
+  setTimeout(() => { b.innerHTML = html }, 1500)
 })
-$('#theme').onclick = () => {
+function toggleTheme() {
   const root = document.documentElement
   const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
   root.dataset.theme = dark ? 'light' : 'dark'
   try { localStorage.setItem('lp-theme', root.dataset.theme) } catch {}
+}
+$('#theme').onclick = toggleTheme
+
+// command palette: jump to sections, run a few actions
+{
+  const dlg = $('#pal'), q = $('#pal-q'), list = $('#pal-list')
+  const jump = id => () => document.getElementById(id).scrollIntoView({ behavior: reduce.matches ? 'auto' : 'smooth' })
+  const ITEMS = [['Playground', 'play'], ['Pipeline', 'how'], ['Quickstart', 'start'], ['Policy file', 'policy'], ['Plans', 'plans'], ['Under the hood', 'under'], ['Benchmarks', 'bench']]
+    .map(([t, id]) => ({ g: 'Sections', t, hint: '#' + id, run: jump(id) }))
+    .concat([
+      { g: 'Actions', t: 'Toggle theme', hint: '', run: toggleTheme },
+      { g: 'Actions', t: 'Copy install command', hint: 'go install', run: () => copy($('#install').textContent) },
+      { g: 'Actions', t: 'Open the source on GitHub', hint: '↗', run: () => { location.href = 'https://github.com/iammdzaidalam/limitplane' } },
+    ])
+  let shown = [], sel = 0, back
+  function render() {
+    const term = q.value.trim().toLowerCase()
+    shown = ITEMS.filter(it => it.t.toLowerCase().includes(term))
+    sel = Math.max(0, Math.min(sel, shown.length - 1))
+    const rows = []
+    shown.forEach((it, i) => {
+      if (it.g !== shown[i - 1]?.g) { const g = el('li', 'grp', it.g); g.setAttribute('role', 'presentation'); rows.push(g) }
+      const li = el('li', '', `${it.t}<span>${it.hint}</span>`)
+      li.setAttribute('role', 'option')
+      Object.assign(li, { id: 'pal-o' + i, onclick: () => run(i), onmousemove: () => { if (sel !== i) { sel = i; render() } } })
+      li.setAttribute('aria-selected', i === sel)
+      rows.push(li)
+    })
+    list.replaceChildren(...(rows.length ? rows : [el('li', 'empty', 'No matches')]))
+    q.setAttribute('aria-activedescendant', shown.length ? 'pal-o' + sel : '')
+    $('#pal-o' + sel)?.scrollIntoView({ block: 'nearest' })
+  }
+  function run(i) { const it = shown[i]; if (!it) return; dlg.close(); it.run() }
+  function open() { back = document.activeElement; q.value = ''; sel = 0; render(); dlg.showModal(); q.focus() }
+  q.oninput = () => { sel = 0; render() }
+  q.onkeydown = e => {
+    const d = { ArrowDown: 1, ArrowUp: -1 }[e.key]
+    if (d) { e.preventDefault(); sel = (sel + d + shown.length) % (shown.length || 1); render() }
+    else if (e.key === 'Enter') { e.preventDefault(); run(sel) }
+  }
+  dlg.onclick = e => { if (e.target === dlg) dlg.close() }
+  dlg.onclose = () => back?.focus({ preventScroll: true })
+  $('#pal-open').onclick = open
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); dlg.open ? dlg.close() : open() }
+  })
 }
 
 // footer mark: route costs as bars against the limit line
