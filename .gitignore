@@ -5,3 +5,7 @@
 .env
 graphify-out/
 .vercel
+.agents/
+.claude/
+skills-lock.json
+.taste-skill/
