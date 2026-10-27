@@ -7,104 +7,221 @@
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap">
 <link rel="stylesheet" href="app.css">
 <script>
 // relative api/ URLs need a trailing slash: /_limitplane -> /_limitplane/
-if (!location.pathname.endsWith('/') && !location.pathname.endsWith('.html')) location.replace(location.pathname + '/' + location.search)
+if (!location.pathname.endsWith('/') && !location.pathname.endsWith('.html')) location.replace(location.pathname + '/' + location.search + location.hash)
 try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElement.dataset.theme = t } catch {}</script>
 </head>
 <body>
-<header>
-  <div class="brand"><img src="logo.svg" alt="">LimitPlane</div>
-  <span id="backend" class="badge" hidden></span>
-  <span id="live" class="badge" hidden><span class="dot"></span><span>offline</span></span>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <a class="brand" href="#/overview"><img src="logo.svg" alt="" width="22" height="22">LimitPlane</a>
+  <nav id="tabs" class="tabs" aria-label="Views" hidden>
+    <a href="#/overview" data-tab="overview">Overview</a>
+    <a href="#/clients" data-tab="clients">Clients</a>
+    <a href="#/policy" data-tab="policy">Policy</a>
+    <a href="#/try" data-tab="try">Try it</a>
+  </nav>
   <span class="spacer"></span>
-  <button id="theme" class="btn icon" type="button" aria-label="Toggle theme">◐</button>
+  <button id="helpBtn" class="btn icon" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+  <button id="theme" class="btn icon" type="button" aria-label="Toggle theme" title="Toggle theme">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" /><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
+  </button>
   <button id="logout" class="btn" type="button" hidden>Sign out</button>
 </header>
+
+<main id="main" tabindex="-1" hidden>
+  <div id="app" data-loading>
+    <div class="strip">
+      <span id="backend" class="pill">backend</span>
+      <span id="live" class="pill"><span class="dot"></span><span>offline</span></span>
+      <a id="bansPill" class="pill" href="#/clients">0 bans active</a>
+      <span class="spacer"></span>
+      <span id="stamp" class="stamp" aria-live="off">Loading</span>
+      <button id="refresh" class="btn small" type="button">Refresh</button>
+    </div>
+    <div id="notice" class="notice" role="alert" hidden></div>
+
+    <section data-view="overview" aria-labelledby="h-overview">
+      <div class="title">
+        <div>
+          <h1 id="h-overview" tabindex="-1">Traffic</h1>
+          <p id="finding" class="sub" aria-live="polite">Waiting for the first requests.</p>
+        </div>
+      </div>
+
+      <div class="kpis" role="group" aria-label="Totals since start">
+        <div class="kpi"><span>Requests</span><b id="kTotal">0</b></div>
+        <div class="kpi"><span>Allowed</span><b id="kAllowed">0</b></div>
+        <div class="kpi"><span>Blocked</span><b id="kBlocked">0</b></div>
+        <div class="kpi"><span>Block rate</span><b id="kRate">0.0<small>%</small></b></div>
+        <div class="kpi"><span>Last 5s average</span><b id="kNow">0.0<small>/s</small></b></div>
+        <div class="kpi"><span>Bans active</span><b id="kBans">0</b></div>
+      </div>
+
+      <div class="grid">
+        <section class="card c7 chartcard" aria-labelledby="h-chart">
+          <h2 id="h-chart">Requests per second <span class="spacer"></span>
+            <span class="legend"><span><i class="sw ok"></i>allowed</span><span><i class="sw bad"></i>blocked</span></span>
+          </h2>
+          <p id="peak" class="meta">Last 120 seconds</p>
+          <div class="plot">
+            <canvas id="chart" class="chart" tabindex="0" role="img" aria-label="Allowed and blocked requests per second, last 120 seconds. Use the arrow keys to read each second."></canvas>
+            <div id="tip" class="tip" hidden></div>
+          </div>
+          <p id="chartLive" class="sr" aria-live="polite"></p>
+        </section>
+
+        <section class="card c5 feedcard" aria-labelledby="h-feed">
+          <h2 id="h-feed">Decisions <span class="spacer"></span>
+            <button id="pause" class="btn small" type="button" aria-pressed="false">Pause <kbd>p</kbd></button>
+          </h2>
+          <div class="filters">
+            <div id="chips" class="chips" role="group" aria-label="Filter decisions"></div>
+            <div class="search">
+              <label for="q" class="sr">Filter by path, client or tenant</label>
+              <input id="q" type="search" placeholder="Filter path, client, tenant" autocomplete="off" spellcheck="false">
+              <kbd aria-hidden="true">/</kbd>
+            </div>
+          </div>
+          <p id="feedBar" class="feedbar" hidden></p>
+          <ul id="feed" class="feed"></ul>
+          <p id="feedEmpty" class="empty">Waiting for traffic.</p>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section class="card c7" aria-labelledby="h-usage">
+          <h2 id="h-usage">Monthly plans <span class="spacer"></span><span id="resets" class="meta"></span></h2>
+          <p class="meta">Each bar is the month's spend against the tier's plan; the tick marks the 80% alert line.</p>
+          <div class="rows tenants" id="tenants">
+            <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
+          </div>
+        </section>
+
+        <section class="card c5" aria-labelledby="h-routes">
+          <h2 id="h-routes">Routes and costs</h2>
+          <p id="routesNote" class="meta">Longest prefix wins; any other path costs 1.</p>
+          <div class="rows routes" id="routes">
+            <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section data-view="clients" aria-labelledby="h-clients" hidden>
+      <div class="title"><div>
+        <h1 id="h-clients" tabindex="-1">Clients</h1>
+        <p class="sub">Who is sending traffic right now, and who is cooling down.</p>
+      </div></div>
+      <div class="grid top">
+        <section class="card c7" aria-labelledby="h-cl">
+          <h2 id="h-cl">Active clients <span class="spacer"></span><span id="clCount" class="meta"></span></h2>
+          <div class="rows clients" id="clients"><div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></div>
+        </section>
+        <section class="card c5" aria-labelledby="h-bans">
+          <h2 id="h-bans">Bans</h2>
+          <form id="banForm" class="banform" novalidate>
+            <label>Client<input name="client" required placeholder="ip or tenant" autocomplete="off" spellcheck="false"></label>
+            <label>Minutes<input name="minutes" type="number" min="1" max="10080" value="10" inputmode="numeric"></label>
+            <label class="wide">Reason<input name="reason" placeholder="manual" autocomplete="off"></label>
+            <button class="btn primary" type="submit">Ban</button>
+          </form>
+          <p id="banMsg" class="msg bad" role="alert"></p>
+          <div class="rows bans" id="bans"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+        </section>
+      </div>
+    </section>
+
+    <section data-view="policy" aria-labelledby="h-policy" hidden>
+      <div class="title"><div>
+        <h1 id="h-policy" tabindex="-1">Policy</h1>
+        <p class="sub">Edits swap in atomically; requests already in flight finish under the old policy.</p>
+      </div></div>
+      <div class="grid top">
+        <section class="card c8" aria-labelledby="h-editor">
+          <h2 id="h-editor">Policy JSON <span id="dirty" class="state"></span><span class="spacer"></span>
+            <button id="policyFormat" class="btn small" type="button">Format</button>
+            <button id="policyLoad" class="btn small" type="button">Revert</button>
+            <button id="policySave" class="btn small primary" type="button">Save <kbd>⌘S</kbd></button>
+          </h2>
+          <label for="policy" class="sr">Policy JSON</label>
+          <textarea id="policy" spellcheck="false" aria-describedby="policyMsg" disabled></textarea>
+          <p id="policyMsg" class="msg" role="alert"></p>
+        </section>
+        <section class="card c4" aria-labelledby="h-tiers">
+          <h2 id="h-tiers">Tiers</h2>
+          <div class="rows tiers" id="tiers"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <p id="tierNote" class="meta"></p>
+        </section>
+      </div>
+    </section>
+
+    <section data-view="try" aria-labelledby="h-try" hidden>
+      <div class="title"><div>
+        <h1 id="h-try" tabindex="-1">Try it</h1>
+        <p class="sub">Fire requests at the demo routes to watch limits trip.</p>
+      </div></div>
+      <section class="card" aria-labelledby="h-fire">
+        <h2 id="h-fire">Send a request</h2>
+        <div class="row">
+          <label class="grow">API key<input id="apiKey" list="keys" placeholder="optional, anonymous without one" autocomplete="off" spellcheck="false"></label>
+          <datalist id="keys"></datalist>
+          <button class="btn" type="button" data-try="ping">GET /v1/ping</button>
+          <button class="btn" type="button" data-try="generate">POST /v1/generate</button>
+          <button class="btn" type="button" data-try="flood">Flood ×30</button>
+        </div>
+        <pre id="tryOut" class="out" aria-live="polite">Fire a request to see the rate limit headers.</pre>
+      </section>
+    </section>
+  </div>
+  <p class="hint">Press <kbd>?</kbd> for keyboard shortcuts</p>
+</main>
 
 <section id="login" class="login" hidden>
   <form id="loginForm">
     <h1>Sign in</h1>
     <p>Use the admin key the gateway was started with.</p>
     <input type="text" autocomplete="username" value="admin" hidden>
-    <label for="key" class="mono" style="font-size:12px">admin key</label>
-    <input id="key" type="password" autocomplete="current-password" required>
+    <label for="key">Admin key</label>
+    <input id="key" type="password" autocomplete="current-password" required aria-describedby="loginMsg">
     <button class="btn primary" type="submit">Open dashboard</button>
     <p id="loginMsg" class="msg bad" role="alert"></p>
   </form>
 </section>
 
-<main id="app" hidden>
-  <div class="kpis" aria-label="Totals">
-    <div class="kpi"><span>Total</span><b id="kTotal">0</b></div>
-    <div class="kpi"><span>Allowed</span><b id="kAllowed" class="ok">0</b></div>
-    <div class="kpi"><span>Blocked</span><b id="kBlocked" class="bad">0</b></div>
-    <div class="kpi"><span>Block rate</span><b id="kRate">0%</b></div>
+
+<aside id="drawer" class="drawer" role="dialog" aria-modal="false" aria-labelledby="dTitle" hidden>
+  <div class="dhead">
+    <div class="dtitle"><span id="dPill" class="pill"></span><h2 id="dTitle"></h2></div>
+    <button id="dClose" class="btn icon" type="button" aria-label="Close inspector"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
   </div>
+  <p id="dWhy" class="why"></p>
+  <div class="dact">
+    <button id="dBan" class="btn primary" type="button">Ban client 10 min</button>
+    <button id="dFilter" class="btn" type="button">Only this client</button>
+    <button id="dCopy" class="btn" type="button">Copy JSON</button>
+  </div>
+  <dl id="dList" class="kv"></dl>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
 
-  <section class="card w8">
-    <h2>Traffic, last 120s <span class="spacer"></span>
-      <span class="legend"><span><i style="background:var(--ok)"></i>allowed</span><span><i style="background:var(--bad)"></i>blocked</span></span>
-    </h2>
-    <canvas id="chart" class="chart" role="img" aria-label="Allowed and blocked requests per second"></canvas>
-  </section>
+<dialog id="help" class="help" aria-labelledby="helpTitle">
+  <h2 id="helpTitle">Keyboard shortcuts</h2>
+  <dl class="kv keys">
+    <div><dt><kbd>/</kbd></dt><dd>Filter the decision feed</dd></div>
+    <div><dt><kbd>p</kbd></dt><dd>Pause or resume the feed</dd></div>
+    <div><dt><kbd>1</kbd> – <kbd>4</kbd></dt><dd>Overview, Clients, Policy, Try it</dd></div>
+    <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector or this list</dd></div>
+    <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Read the chart second by second</dd></div>
+    <div><dt><kbd>⌘</kbd> <kbd>S</kbd></dt><dd>Save the policy while editing</dd></div>
+  </dl>
+  <form method="dialog"><button class="btn" autofocus>Close</button></form>
+</dialog>
 
-  <section class="card w4">
-    <h2>Decisions</h2>
-    <ul id="feed" class="feed"></ul>
-    <p id="feedEmpty" class="empty">Waiting for traffic.</p>
-  </section>
-
-  <section id="try" class="card w6" hidden>
-    <h2>Try it</h2>
-    <div class="row">
-      <input id="apiKey" placeholder="API key (optional)" aria-label="API key">
-      <button class="btn" type="button" data-try="ping">GET /v1/ping</button>
-      <button class="btn" type="button" data-try="generate">POST /v1/generate</button>
-      <button class="btn" type="button" data-try="flood">Flood ×30</button>
-    </div>
-    <pre id="tryOut" class="out" aria-live="polite">Fire a request to see the rate limit headers.</pre>
-  </section>
-
-  <section class="card w6">
-    <h2>Tenants</h2>
-    <div class="scroll"><table>
-      <thead><tr><th>Tenant</th><th>Tier</th><th class="num">Allowed</th><th class="num">Blocked</th><th>Monthly</th></tr></thead>
-      <tbody id="tenants"></tbody>
-    </table></div>
-  </section>
-
-  <section class="card w6">
-    <h2>Clients</h2>
-    <div class="scroll"><table>
-      <thead><tr><th>Client</th><th>Label</th><th class="num">RPS</th><th class="num">Blocked</th><th>Seen</th><th></th></tr></thead>
-      <tbody id="clients"></tbody>
-    </table></div>
-  </section>
-
-  <section class="card w6">
-    <h2>Bans</h2>
-    <form id="banForm" class="row">
-      <input name="client" placeholder="client (ip or tenant)" required aria-label="Client">
-      <input name="minutes" type="number" min="1" value="10" style="flex:0 0 80px" aria-label="Minutes">
-      <input name="reason" placeholder="reason" aria-label="Reason">
-      <button class="btn" type="submit">Ban</button>
-    </form>
-    <p id="banMsg" class="msg bad" role="alert"></p>
-    <div class="scroll"><table>
-      <thead><tr><th>Client</th><th>Until</th><th>Reason</th><th></th></tr></thead>
-      <tbody id="bans"></tbody>
-    </table></div>
-  </section>
-
-  <section class="card w6">
-    <h2>Policy <span class="spacer"></span><button id="policyLoad" class="btn small" type="button">Reload</button><button id="policySave" class="btn small primary" type="button">Save</button></h2>
-    <textarea id="policy" spellcheck="false" aria-label="Policy JSON"></textarea>
-    <p id="policyMsg" class="msg" role="status"></p>
-  </section>
-</main>
+<div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
 <script src="app.js"></script>
 </body>
 </html>
