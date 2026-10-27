@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: limitplane-config
+data:
+  config.json: |
+    {
+      "tiers": {"free": {"rate": {"limit": 10, "period": "1s", "burst": 20}, "monthly": 10000}},
+      "routes": [{"prefix": "/", "cost": 1}],
+      "anonymous": "free"
+    }
