@@ -7,7 +7,7 @@
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="app.css">
 <script>
 // relative api/ URLs need a trailing slash: /_limitplane -> /_limitplane/
@@ -16,7 +16,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="nav">
+<header class="nav"><div class="navin">
   <a class="brand" href="#/overview"><img src="logo.svg" alt="" width="22" height="22">LimitPlane</a>
   <nav id="tabs" class="tabs" aria-label="Views" hidden>
     <a href="#/overview" data-tab="overview">Overview</a>
@@ -34,7 +34,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     </button>
     <button id="logout" class="btn ghost small" type="button" hidden>Sign out</button>
   </div>
-</header>
+</div></header>
 
 <main id="main" tabindex="-1" hidden>
   <div id="app" data-loading>
@@ -50,7 +50,8 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 
     <section data-view="overview" aria-labelledby="h-overview">
       <div class="title">
-        <h1 id="h-overview" tabindex="-1">Traffic</h1>
+        <span class="sec" aria-hidden="true">01</span>
+        <h1 id="h-overview" tabindex="-1">Traffic, <em>right now</em></h1>
         <p id="finding" class="sub" aria-live="polite">Waiting for the first requests.</p>
       </div>
 
@@ -97,7 +98,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
             </div>
           </div>
           <p id="feedBar" class="feedbar" hidden></p>
-          <div class="tile feedtile">
+          <div class="feedtile">
             <ul id="feed" class="feed"></ul>
             <p id="feedEmpty" class="empty">Waiting for traffic.</p>
           </div>
@@ -108,7 +109,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         <section class="card c7" aria-labelledby="h-usage">
           <div class="ch"><h2 id="h-usage">Monthly plans</h2><span class="spacer"></span><span id="resets" class="micro"></span></div>
           <p class="meta">Each bar is the month's spend against the tier's plan; the tick marks the 80% alert line.</p>
-          <div class="tile rows tenants" id="tenants">
+          <div class="rows tenants" id="tenants">
             <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
           </div>
         </section>
@@ -116,7 +117,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         <section class="card c5" aria-labelledby="h-routes">
           <div class="ch"><h2 id="h-routes">Routes and costs</h2></div>
           <p id="routesNote" class="meta">Longest prefix wins; any other path costs 1.</p>
-          <div class="tile rows routes" id="routes">
+          <div class="rows routes" id="routes">
             <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
           </div>
         </section>
@@ -125,13 +126,14 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 
     <section data-view="clients" aria-labelledby="h-clients" hidden>
       <div class="title">
-        <h1 id="h-clients" tabindex="-1">Clients</h1>
+        <span class="sec" aria-hidden="true">02</span>
+        <h1 id="h-clients" tabindex="-1">Clients <em>and bans</em></h1>
         <p class="sub">Who is sending traffic right now, and who is cooling down.</p>
       </div>
       <div class="grid top">
         <section class="card c7" aria-labelledby="h-cl">
           <div class="ch"><h2 id="h-cl">Active clients</h2><span class="spacer"></span><span id="clCount" class="micro"></span></div>
-          <div class="cgrid" id="clients"><div class="tile rows"><div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
+          <div class="cgrid" id="clients"><div class="rows"><div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
         </section>
         <section class="card c5" aria-labelledby="h-bans">
           <div class="ch"><h2 id="h-bans">Bans</h2></div>
@@ -142,14 +144,15 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
             <button class="btn primary" type="submit">Ban client</button>
           </form>
           <p id="banMsg" class="msg bad" role="alert"></p>
-          <div class="tile rows bans" id="bans"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <div class="rows bans" id="bans"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
         </section>
       </div>
     </section>
 
     <section data-view="policy" aria-labelledby="h-policy" hidden>
       <div class="title">
-        <h1 id="h-policy" tabindex="-1">Policy</h1>
+        <span class="sec" aria-hidden="true">03</span>
+        <h1 id="h-policy" tabindex="-1">Policy, <em>hot reloaded</em></h1>
         <p class="sub">Edits swap in atomically; requests already in flight finish under the old policy.</p>
       </div>
       <div class="grid top">
@@ -165,7 +168,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         </section>
         <section class="card c4" aria-labelledby="h-tiers">
           <div class="ch"><h2 id="h-tiers">Tiers</h2></div>
-          <div class="tile rows tiers cv" id="tiers"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <div class="rows tiers cv" id="tiers"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
           <p id="tierNote" class="meta"></p>
         </section>
       </div>
@@ -173,7 +176,8 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 
     <section data-view="try" aria-labelledby="h-try" hidden>
       <div class="title">
-        <h1 id="h-try" tabindex="-1">Try it</h1>
+        <span class="sec" aria-hidden="true">04</span>
+        <h1 id="h-try" tabindex="-1">Try it <em>live</em></h1>
         <p class="sub">Fire requests at the demo routes to watch limits trip.</p>
       </div>
       <section class="card" aria-labelledby="h-fire">
@@ -194,9 +198,9 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 
 <section id="login" class="login" hidden>
   <form id="loginForm" class="card lcard">
-    <div class="tile lhead">
+    <div class="lhead">
       <img src="logo.svg" alt="" width="28" height="28">
-      <h1>Sign in</h1>
+      <h1>Sign in to <em>LimitPlane</em></h1>
       <p>Use the admin key the gateway was started with.</p>
     </div>
     <input type="text" autocomplete="username" value="admin" hidden>
@@ -226,13 +230,13 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <button id="dFilter" class="btn" type="button">Only this client</button>
     <button id="dCopy" class="btn" type="button">Copy JSON</button>
   </div>
-  <dl id="dList" class="tile kv cv"></dl>
+  <dl id="dList" class="kv cv"></dl>
 </aside>
 <div id="scrim" class="scrim" hidden></div>
 
 <dialog id="help" class="dlg help" aria-labelledby="helpTitle">
   <h2 id="helpTitle">Keyboard shortcuts</h2>
-  <dl class="tile kv cv keys">
+  <dl class="kv cv keys">
     <div><dt><kbd><span class="mod">⌘</span>K</kbd></dt><dd>Open the command palette</dd></div>
     <div><dt><kbd>/</kbd></dt><dd>Filter the decision feed</dd></div>
     <div><dt><kbd>p</kbd></dt><dd>Pause or resume the feed</dd></div>
@@ -247,7 +251,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 <dialog id="palette" class="dlg palette" aria-label="Command palette">
   <div class="psearch">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
-    <input id="palQ" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Type a command, or a client to ban" placeholder="Type a command, or a client to ban" autocomplete="off" spellcheck="false">
+    <input id="palQ" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Type a command, or a client to ban" placeholder="Command, or a client to ban" autocomplete="off" spellcheck="false">
     <kbd>esc</kbd>
   </div>
   <ul id="palList" class="plist" role="listbox" aria-label="Commands"></ul>

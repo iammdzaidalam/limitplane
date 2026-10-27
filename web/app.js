@@ -141,7 +141,7 @@ function advance(now = Math.floor(Date.now() / 1000)) {
 function failed(id, what, reason) {
   if (loaded[id]) return
   const row = h('div', { className: 'state-row bad' }, `Couldn't load ${what} (${reason.message}). `, h('button', { className: 'link', type: 'button', onclick: () => refresh() }, 'Retry'))
-  $('#' + id).replaceChildren(id === 'clients' ? h('div', { className: 'tile rows' }, row) : row)
+  $('#' + id).replaceChildren(id === 'clients' ? h('div', { className: 'rows' }, row) : row)
 }
 
 async function refresh(seed) {
@@ -268,7 +268,7 @@ function renderClients() {
       h('div', { className: 'cfoot' }, col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
         banned.has(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
   })
-  $('#clients').replaceChildren(...(cards.length ? cards : [h('div', { className: 'tile rows' }, h('div', { className: 'state-row' }, 'No clients have sent traffic yet.'))]))
+  $('#clients').replaceChildren(...(cards.length ? cards : [h('div', { className: 'rows' }, h('div', { className: 'state-row' }, 'No clients have sent traffic yet.'))]))
   $('#clCount').textContent = `${clients.length} ${clients.length === 1 ? 'client' : 'clients'}`
 }
 
