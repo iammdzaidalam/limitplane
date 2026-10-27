@@ -11,7 +11,7 @@ hdr=()
 [ -n "$KEY" ] && hdr=(-H "X-Api-Key: $KEY")
 
 out=$(for _ in $(seq "$N"); do
-  curl -s -o /dev/null -D - "${hdr[@]}" "$URL" | awk 'NR==1{c=$2} tolower($1)=="x-served-by:"{s=$2} END{print c, s}'
+  curl -s -o /dev/null -D - ${hdr[@]+"${hdr[@]}"} "$URL" | awk 'NR==1{c=$2} tolower($1)=="x-served-by:"{s=$2} END{print c, s}'
 done)
 
 echo "$out" | sort | uniq -c
