@@ -113,19 +113,65 @@ const globe = (() => {
   return g
 })()
 
+// mini dashboard in the hero window: rolling 40 s of per-second counts, latest rows, busiest clients
+const mini = (() => {
+  const secs = new Map(), clients = new Map(), latest = [], banned = new Map(), m = { visible: false }
+  const spark = $('#spark'), feed = $('#feed'), topc = $('#topc')
+  spark.replaceChildren(...Array.from({ length: 40 }, () => Object.assign(document.createElement('span'), { innerHTML: '<i></i><i></i>' })))
+  m.add = (id, r, path, at = Date.now()) => {
+    const s = Math.floor(at / 1000), b = secs.get(s) || { ok: 0, no: 0, burst: 0 }
+    r.status === 200 ? b.ok++ : b.no++
+    if (r.reason === 'burst') b.burst++
+    if (r.reason === 'banned') banned.set(id, s)
+    secs.set(s, b)
+    const c = clients.get(id) || { n: 0, no: 0 }
+    c.n++; if (r.status !== 200) c.no++
+    clients.set(id, c)
+    latest.unshift([id, path, r]); latest.length = Math.min(latest.length, 6)
+  }
+  m.render = () => {
+    const now = Math.floor(Date.now() / 1000), win = Array.from({ length: 40 }, (_, i) => secs.get(now - 39 + i) || { ok: 0, no: 0, burst: 0 })
+    for (const k of secs.keys()) if (k < now - 40) secs.delete(k)
+    const max = Math.max(4, ...win.map(b => b.ok + b.no)), tot = win.reduce((a, b) => (a.ok += b.ok, a.no += b.no, a.burst += b.burst, a), { ok: 0, no: 0, burst: 0 })
+    win.forEach((b, i) => { const [ok, no] = spark.children[i].children; ok.style.height = b.ok / max * 100 + '%'; no.style.height = b.no / max * 100 + '%' })
+    $('#k-rps').textContent = (win.slice(34, 39).reduce((a, b) => a + b.ok + b.no, 0) / 5).toFixed(1)
+    $('#k-ok').textContent = tot.ok + tot.no ? Math.round(tot.ok / (tot.ok + tot.no) * 100) + '%' : '–'
+    $('#k-burst').textContent = fmt(tot.burst)
+    $('#k-ban').textContent = [...banned.values()].filter(t => now - t < 10).length
+    feed.replaceChildren(...latest.map(([id, path, r]) => el('tr', '', `<td>${id}</td><td>${path}</td><td class="${r.status === 200 ? 'ok' : 'no'}">${r.status}${r.status === 200 ? '' : ' ' + r.reason}</td>`)))
+    const top = [...clients].sort((a, b) => b[1].n - a[1].n).slice(0, 4)
+    topc.replaceChildren(...top.map(([id, c]) => {
+      const li = el('li', '', `<span>${id}</span><span>${fmt(c.n)} · ${fmt(c.no)} blocked</span><span class="bar"><i></i></span>`)
+      li.style.setProperty('--w', c.n / top[0][1].n * 100)
+      return li
+    }))
+  }
+  new IntersectionObserver(es => { m.visible = es[0].isIntersecting; if (m.visible) m.render() }).observe($('#mini'))
+  setInterval(() => m.visible && !document.hidden && m.render(), 500)
+  return m
+})()
+
 let decisions = 0
-function emit(id, r) {
+function emit(id, r, path, at) {
   $('#count').textContent = fmt(++decisions)
-  globe.ping(id, r.status === 200 ? 'ok' : r.reason === 'burst' ? 'warn' : 'bad')
+  if (!at) globe.ping(id, r.status === 200 ? 'ok' : r.reason === 'burst' ? 'warn' : 'bad')
+  mini.add(id, r, path, at)
 }
 
 // anonymous clients (documentation IPs) on the free tier; three of them send too many AI calls
 {
   const H = '/healthz', E = '/v1/embed', G = '/v1/generate'
   const anon = Array.from({ length: 24 }, (_, i) => ({ id: `203.0.113.${(i * 37 + 11) % 254 + 1}`, g: gate('free'), p: [.7, .3, .3][i] ?? .05, paths: i < 3 ? [G] : [H, H, E, G] }))
+  // the clients' clock runs 40 s ahead, so the first 40 s can be simulated at load and stamped with past wall times
+  const AHEAD = 40e6, tick = (vnow, at) => {
+    for (const c of anon) if (Math.random() < c.p) { const p = c.paths[Math.random() * c.paths.length | 0]; emit(c.id, c.g.decide(p, vnow), p, at) }
+  }
+  const t0 = us(), w0 = Date.now()
+  for (let k = 0; k < 200; k++) tick(t0 + k * 2e5, w0 - AHEAD / 1e3 + k * 200)
+  mini.render()
   setInterval(() => {
-    if (!globe.visible || document.hidden) return
-    for (const c of anon) if (Math.random() < c.p) emit(c.id, c.g.decide(c.paths[Math.random() * c.paths.length | 0], us()))
+    if (!(globe.visible || mini.visible) || document.hidden) return
+    tick(us() + AHEAD)
   }, 200)
 }
 
@@ -135,18 +181,33 @@ function emit(id, r) {
   tick(); setInterval(tick, 1000)
 }
 
-// hero wordmark: sized to span the width, revealed in horizontal slices
+// hero: the selection box reports its own measured size, like a design-tool annotation
 {
-  const wm = $('#wm'), h1 = wm.parentElement, B = 4
-  if (!reduce.matches) {
-    for (let i = 1; i < B; i++) wm.append(wm.firstElementChild.cloneNode(true))
-    ;[...wm.children].forEach((s, i) => {
-      s.style.clipPath = `inset(calc(${i * 100 / B}% - 1px) 0 calc(${100 - (i + 1) * 100 / B}% - 1px) 0)`
-      s.style.setProperty('--i', i); s.style.setProperty('--x', (i % 2 ? .3 : -.3) + 'em')
-    })
+  const sel = $('#sel'), dim = $('#dim'), grid = $('.hero-grid'), svg = $('#leads'), notes = $$('.notes li')
+  // leader lines: box -> one vertical spine -> a branch to each callout
+  const lead = () => {
+    const r = sel.getBoundingClientRect()
+    dim.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`
+    if (getComputedStyle(svg).display === 'none') return
+    const g = grid.getBoundingClientRect(), ns = notes.map(n => n.getBoundingClientRect())
+    const x0 = r.right - g.left + 8, y0 = r.top + r.height / 2 - g.top
+    const sx = Math.min(...ns.map(n => n.left)) - g.left - 24, ys = ns.map(n => n.top + n.height / 2 - g.top)
+    svg.setAttribute('viewBox', `0 0 ${g.width} ${g.height}`)
+    svg.innerHTML = `<path d="M${x0} ${y0}H${sx}M${sx} ${Math.min(y0, ...ys)}V${Math.max(y0, ...ys)}${ns.map((n, i) => `M${sx} ${ys[i]}H${n.left - g.left}`).join('')}"/>`
+      + [[x0, y0], [sx, y0], ...ys.map(y => [sx, y])].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="2.5"/>`).join('')
   }
-  const fit = () => { h1.style.fontSize = '100px'; h1.style.fontSize = 100 * h1.clientWidth / wm.offsetWidth + 'px' }
-  fit(); document.fonts?.ready.then(fit); addEventListener('resize', fit)
+  new ResizeObserver(lead).observe(grid)
+  document.fonts?.ready.then(lead)
+}
+
+// top bar: active section in blue; bottom bar appears once the hero is passed
+{
+  const links = $$('.links a'), bar = $('#bbar'), hero = $('.hero')
+  const spy = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) links.forEach(a => a.setAttribute('aria-current', a.hash === '#' + e.target.id))
+  }), { rootMargin: '-45% 0px -50% 0px' })
+  $$('main > .sec[id]').forEach(s => spy.observe(s))
+  new IntersectionObserver(es => bar.classList.toggle('on', !es[0].isIntersecting)).observe(hero.querySelector('.row'))
 }
 
 // hero: simulated traffic against the free tier
@@ -157,7 +218,7 @@ function emit(id, r) {
   let i = 0, timer
   const step = (now = us()) => {
     const path = SEQ[i++ % SEQ.length], r = g.decide(path, now), post = path !== H
-    emit(g.c.id, r)
+    emit(g.c.id, r, path)
     log.prepend(el('li', '', `<span class="code ${r.status === 200 ? 'ok' : 'no'}">${r.status}</span><span class="p">${post ? 'POST' : 'GET'} ${path}</span><span class="${r.status === 200 ? '' : 'no'}">${r.status === 200 ? '-' + r.cost : 'burst'}</span>`))
     while (log.children.length > 5) log.lastChild.remove()
   }
@@ -226,7 +287,7 @@ function emit(id, r) {
 
   function send(method, path) {
     const r = g.decide(path, us())
-    emit(g.c.id, r)
+    emit(g.c.id, r, path)
     if (chips.firstChild.classList.contains('muted')) chips.replaceChildren()
     chips.prepend(el('li', '', `<b class="${r.status === 200 ? 'ok' : 'no'}">${r.status}</b>${path}<span class="muted">${r.status === 200 ? '-' + r.cost : r.reason}</span>`))
     while (chips.children.length > 14) chips.lastChild.remove()
@@ -325,11 +386,11 @@ $('#theme').onclick = toggleTheme
 {
   const dlg = $('#pal'), q = $('#pal-q'), list = $('#pal-list')
   const jump = id => () => document.getElementById(id).scrollIntoView({ behavior: reduce.matches ? 'auto' : 'smooth' })
-  const ITEMS = [['Playground', 'play'], ['Pipeline', 'how'], ['Quickstart', 'start'], ['Policy file', 'policy'], ['Plans', 'plans'], ['Under the hood', 'under'], ['Benchmarks', 'bench']]
+  const ITEMS = [['Live decisions', 'live'], ['Playground', 'play'], ['Pipeline', 'how'], ['Quickstart', 'start'], ['Policy file', 'policy'], ['Plans', 'plans'], ['Under the hood', 'under'], ['Benchmarks', 'bench']]
     .map(([t, id]) => ({ g: 'Sections', t, hint: '#' + id, run: jump(id) }))
     .concat([
       { g: 'Actions', t: 'Toggle theme', hint: '', run: toggleTheme },
-      { g: 'Actions', t: 'Copy install command', hint: 'go install', run: () => copy($('#install').textContent) },
+      { g: 'Actions', t: 'Copy install command', hint: 'go install', run: () => copy($('#install3').textContent) },
       { g: 'Actions', t: 'Open the source on GitHub', hint: '↗', run: () => { location.href = 'https://github.com/iammdzaidalam/limitplane' } },
     ])
   let shown = [], sel = 0, back

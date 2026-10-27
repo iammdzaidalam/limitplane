@@ -8,7 +8,7 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap"> <!-- taste-skill-ignore -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist+Mono:wght@400;500&display=swap"> <!-- taste-skill-ignore -->
 <script>document.documentElement.classList.add('js');try{const t=localStorage.getItem('lp-theme');if(t)document.documentElement.dataset.theme=t}catch{}</script>
 <link rel="stylesheet" href="site.css">
 </head>
@@ -17,114 +17,141 @@
 <p class="sr" id="toast" role="status"></p>
 
 <header class="top">
-  <a class="brand" href="#top"><img src="favicon.svg" alt="">LimitPlane</a>
-  <p class="clock"><span id="clock">00:00:00 UTC</span><span class="sep" aria-hidden="true">·</span><span><span id="count">0</span> decisions in this tab</span></p>
+  <div class="top-in">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="">LimitPlane</a>
+    <nav class="links" aria-label="Sections">
+      <a href="#play">Playground</a><a href="#how">Pipeline</a><a href="#start">Quickstart</a><a href="#plans">Plans</a>
+    </nav>
+    <p class="clock"><span id="clock">00:00:00 UTC</span><span class="cnt"> · <span id="count">0</span> decisions</span></p>
+    <button class="icon" id="theme" type="button" aria-label="Toggle light or dark theme"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg></button>
+    <button class="icon kbd" id="pal-open" type="button" aria-label="Open the command palette" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">⌘K</button>
+  </div>
 </header>
 
-<nav class="dock" aria-label="Main">
-  <button class="icon" id="theme" type="button" aria-label="Toggle light or dark theme"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg></button>
-  <span class="bar" aria-hidden="true"></span>
-  <a href="#play">Playground</a>
-  <a class="opt" href="#how">Pipeline</a>
-  <a class="opt" href="#start">Quickstart</a>
-  <a class="opt" href="#plans">Plans</a>
-  <span class="bar" aria-hidden="true"></span>
-  <button class="icon kbd" id="pal-open" type="button" aria-label="Open the command palette" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">⌘K</button>
-  <a class="icon" href="https://github.com/iammdzaidalam/limitplane" aria-label="Source on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4.5" cy="12.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="11.5" cy="5.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 5.1v5.8M11.5 7.1c0 2.4-2 3-5.6 4.3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></a>
-</nav>
-
 <main id="top">
-<section class="hero" aria-labelledby="h1">
-  <h1 id="h1" class="wm"><span class="sr">LimitPlane, rate limits priced by cost</span><span class="wm-word" id="wm" aria-hidden="true"><span>limitplane</span></span></h1>
-  <div class="hero-row">
-    <p class="intro">Rate limits priced by what a request costs. One Go binary in front of any HTTP service: a health check costs 1 unit, an AI call costs 5, and each tenant gets a burst budget and a monthly plan, shared across replicas through Redis.</p>
-    <div class="cmdrow">
-      <div class="cmd"><code id="install">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button class="icon" type="button" data-copy="install" aria-label="Copy the install command"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 3.2V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v6.5a1 1 0 0 0 1 1h.2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></button></div>
-      <a class="btn primary" href="#play">Try the limiter</a>
+<section class="sec hero" aria-labelledby="h1">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <p class="label">Rate-limiting gateway · Go</p>
+        <h1 id="h1">Rate limits priced by <em>what a request <span class="sel" id="sel">costs.<i></i><i></i><i></i><i></i><span class="dim" id="dim" aria-hidden="true"></span></span></em></h1>
+        <p class="intro">One Go binary in front of any HTTP service. A health check costs 1 unit, an AI call costs 5; each tenant gets a burst budget and a monthly plan, shared across replicas through Redis.</p>
+        <div class="row">
+          <a class="btn dark" href="#play">Try the limiter</a>
+          <a class="btn" href="#start">Quickstart</a>
+        </div>
+      </div>
+      <svg id="leads" aria-hidden="true"></svg>
+      <ul class="notes" aria-label="Spec">
+        <li><span class="k">cost</span>5 units<span class="sub">POST /v1/generate</span></li>
+        <li><span class="k">burst</span>10<span class="sub">free tier, refills 5/s</span></li>
+        <li><span class="k">check</span>41 ns<span class="sub">one GCRA decision</span></li>
+        <li><span class="k">allocs</span>0<span class="sub">per check, in memory</span></li>
+      </ul>
     </div>
+
+    <figure class="window rv" aria-labelledby="mini-cap">
+      <div class="chrome"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span id="mini-cap">limitplane · live decisions · simulated in this tab</span></div>
+      <div class="mini" id="mini">
+        <div class="kpis">
+          <div><span class="tag">Requests / s</span><b id="k-rps">0</b></div>
+          <div><span class="tag">Allowed</span><b id="k-ok">–</b></div>
+          <div><span class="tag">Burst 429s · 40 s</span><b id="k-burst">0</b></div>
+          <div><span class="tag">Banned clients</span><b id="k-ban">0</b></div>
+        </div>
+        <div class="chart"><p class="tag">Decisions per second, last 40 s <span class="key"><i class="d ok"></i>allowed <i class="d bad"></i>429</span></p><div class="spark" id="spark" aria-hidden="true"></div></div>
+        <div class="feed"><p class="tag">Latest</p><table><thead><tr><th scope="col">Client</th><th scope="col">Route</th><th scope="col">Result</th></tr></thead><tbody id="feed"></tbody></table></div>
+        <div class="topc"><p class="tag">Busiest clients</p><ol id="topc"></ol></div>
+      </div>
+    </figure>
   </div>
-  <ul class="feats" aria-label="Features"><li>GCRA</li><li>Redis</li><li>Hot reload</li><li>Autopilot</li><li>Prometheus</li></ul>
 </section>
 
-<section class="sec" aria-label="Live demos">
-  <div class="grid">
-    <article class="card s7 rv">
-      <div class="inner globe-tile">
-        <span class="hint">[ Drag to spin ]</span>
-        <canvas id="globe" role="img" aria-label="Dotted globe with a ping for each rate-limit decision"></canvas>
-        <ul class="legend" aria-label="Legend"><li><i class="d ok"></i>allowed</li><li><i class="d warn"></i>burst 429</li><li><i class="d bad"></i>banned or monthly 429</li></ul>
-      </div>
-      <div class="meta"><div><h3>Every decision, as a ping</h3><p>Simulated anonymous clients plus your playground requests. Clients placed by hash, not by location.</p></div><a class="go" href="#play" aria-label="Open the playground">↗</a></div>
-    </article>
-    <article class="card s5 rv">
-      <div class="inner live" id="live" role="group" aria-label="Live demo: the free tier bucket under simulated traffic">
-        <div class="live-head"><span class="hint">[ Click pause ]</span><button class="btn sm" type="button" id="live-toggle" aria-pressed="false">Pause</button></div>
-        <div><span class="bignum" id="live-n">10</span><span class="tag">units left of 10</span></div>
-        <div class="cells" id="live-cells" aria-hidden="true"></div>
-        <ol class="stream" id="live-log" aria-hidden="true"></ol>
-      </div>
-      <div class="meta"><div><h3>The free-tier bucket, live</h3><p>acme on free: 5 units/s, burst 10.</p></div><a class="go" href="#play" aria-label="Try it in the playground">↗</a></div>
-    </article>
-    <article class="card s6 rv">
-      <div class="inner costs">
-        <div class="cost" style="--c:1"><span class="tag">GET /healthz</span><span class="cbar"></span><b>1</b></div>
-        <div class="cost" style="--c:2"><span class="tag">POST /v1/embed</span><span class="cbar"></span><b>2</b></div>
-        <div class="cost" style="--c:5"><span class="tag">POST /v1/generate</span><span class="cbar"></span><b>5</b></div>
-      </div>
-      <div class="meta"><div><h3>Units per route</h3><p>The longest matching prefix in the policy sets the price.</p></div><a class="go" href="#policy" aria-label="See the policy">↗</a></div>
-    </article>
-    <article class="card s6 rv">
-      <div class="inner ns"><b>41<small>ns</small></b><span class="tag">one GCRA check · 0 allocs</span></div>
-      <div class="meta"><div><h3>Cheap enough for every request</h3><p>Measured on an Apple M5 with Go 1.26.</p></div><a class="go" href="#bench" aria-label="See the benchmarks">↗</a></div>
-    </article>
+<section class="sec" id="live" aria-labelledby="live-h">
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">01</span>
+    <div class="head rv">
+      <p class="label">Live</p>
+      <h2 id="live-h">Every decision, <em>as it happens.</em></h2>
+      <p>The window above and these demos share one simulation: anonymous free-tier clients on documentation IPs, plus whatever you send from the playground.</p>
+    </div>
+    <div class="grid">
+      <article class="card s7 r2 rv">
+        <div class="inner globe-tile">
+          <span class="hint">[ Drag to spin ]</span>
+          <canvas id="globe" role="img" aria-label="Dotted globe with a ping for each rate-limit decision"></canvas>
+          <ul class="legend" aria-label="Legend"><li><i class="d ok"></i>allowed</li><li><i class="d warn"></i>burst 429</li><li><i class="d bad"></i>banned or monthly 429</li></ul>
+        </div>
+        <div class="meta"><div><h3>Pings on a globe</h3><p>Clients placed by hash, not by location.</p></div><a class="go" href="#play" aria-label="Open the playground">↗</a></div>
+      </article>
+      <article class="card s5 rv">
+        <div class="inner live" id="live-demo" role="group" aria-label="Live demo: the free tier bucket under simulated traffic">
+          <div class="live-head"><span class="hint">[ Click pause ]</span><button class="btn sm" type="button" id="live-toggle" aria-pressed="false">Pause</button></div>
+          <div><span class="bignum" id="live-n">10</span><span class="tag">units left of 10</span></div>
+          <div class="cells" id="live-cells" aria-hidden="true"></div>
+          <ol class="stream" id="live-log" aria-hidden="true"></ol>
+        </div>
+        <div class="meta"><div><h3>The free-tier bucket</h3><p>acme on free: 5 units/s, burst 10.</p></div><a class="go" href="#play" aria-label="Try it in the playground">↗</a></div>
+      </article>
+      <article class="card s5 rv">
+        <div class="costs">
+          <div class="cost" style="--c:1"><span class="tag">GET /healthz</span><span class="cbar"></span><b>1</b></div>
+          <div class="cost" style="--c:2"><span class="tag">POST /v1/embed</span><span class="cbar"></span><b>2</b></div>
+          <div class="cost" style="--c:5"><span class="tag">POST /v1/generate</span><span class="cbar"></span><b>5</b></div>
+        </div>
+        <div class="meta"><div><h3>Units per route</h3><p>The longest matching prefix in the policy sets the price.</p></div><a class="go" href="#policy" aria-label="See the policy">↗</a></div>
+      </article>
+    </div>
   </div>
 </section>
 
 <section class="sec" id="play" aria-labelledby="play-h">
-  <div class="sec-head rv">
-    <p class="label">Playground</p>
-    <h2 id="play-h">Hit the real limiter.</h2>
-    <p>This is the same GCRA the gateway runs, ported to a few lines of JavaScript and running in your tab. Pick a tier, send requests, and watch the burst bucket and the monthly plan.</p>
-  </div>
-  <article class="card rv">
-    <div class="inner play">
-      <div class="ctl">
-        <fieldset>
-          <legend class="tag">Tier</legend>
-          <div class="seg" role="radiogroup" aria-label="Tier">
-            <label><input type="radio" name="tier" value="free" id="tier-free" checked><span>free</span></label>
-            <label><input type="radio" name="tier" value="pro" id="tier-pro"><span>pro</span></label>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">02</span>
+    <div class="head rv">
+      <p class="label">Playground</p>
+      <h2 id="play-h">Hit the <em>real limiter.</em></h2>
+      <p>This is the same GCRA the gateway runs, ported to a few lines of JavaScript and running in your tab. Pick a tier, send requests, and watch the burst bucket and the monthly plan.</p>
+    </div>
+    <article class="card rv">
+      <div class="inner play">
+        <div class="ctl">
+          <fieldset>
+            <legend class="tag">Tier</legend>
+            <div class="seg" role="radiogroup" aria-label="Tier">
+              <label><input type="radio" name="tier" value="free" id="tier-free" checked><span>free</span></label>
+              <label><input type="radio" name="tier" value="pro" id="tier-pro"><span>pro</span></label>
+            </div>
+            <p class="tag" id="tier-note"></p>
+          </fieldset>
+          <button class="btn" type="button" data-send="GET /healthz">GET /healthz <small>1 unit</small></button>
+          <button class="btn" type="button" data-send="POST /v1/generate">POST /v1/generate <small>5 units</small></button>
+          <button class="btn" type="button" id="flood">Flood x30 <small>30 AI calls</small></button>
+          <div class="row">
+            <button class="btn" type="button" id="month">Jump to month end</button>
+            <button class="btn" type="button" id="reset">Reset</button>
           </div>
-          <p class="tag" id="tier-note"></p>
-        </fieldset>
-        <button class="btn" type="button" data-send="GET /healthz">GET /healthz <small>1 unit</small></button>
-        <button class="btn" type="button" data-send="POST /v1/generate">POST /v1/generate <small>5 units</small></button>
-        <button class="btn" type="button" id="flood">Flood x30 <small>30 AI calls</small></button>
-        <div class="row">
-          <button class="btn" type="button" id="month">Jump to month end</button>
-          <button class="btn" type="button" id="reset">Reset</button>
+          <ul class="try">
+            <li>On free, two AI calls drain the bucket and the third gets a burst 429.</li>
+            <li>Flood x30 trips autopilot: 20 burst blocks in 10 s earns a 5 minute ban.</li>
+            <li>Jump to month end, then send two AI calls to see a monthly 429.</li>
+          </ul>
         </div>
-        <ul class="try">
-          <li>On free, two AI calls drain the bucket and the third gets a burst 429.</li>
-          <li>Flood x30 trips autopilot: 20 burst blocks in 10 s earns a 5 minute ban.</li>
-          <li>Jump to month end, then send two AI calls to see a monthly 429.</li>
-        </ul>
-      </div>
-      <div class="pane meters">
-        <div>
-          <div class="meter-head"><span class="tag">Burst bucket <span id="burst-note"></span></span><b id="burst-n">10 / 10</b></div>
-          <div class="cells" id="burst-cells" aria-hidden="true"></div>
-          <p class="ban" id="ban" hidden></p>
+        <div class="pane meters">
+          <div>
+            <div class="meter-head"><span class="tag">Burst bucket <span id="burst-note"></span></span><b id="burst-n">10 / 10</b></div>
+            <div class="cells" id="burst-cells" aria-hidden="true"></div>
+            <p class="ban" id="ban" hidden></p>
+          </div>
+          <div>
+            <div class="meter-head"><span class="tag">Monthly plan, resets on the 1st (UTC)</span><b id="month-n">10,000 / 10,000</b></div>
+            <div class="cells flat" style="--n:1" id="month-cells" aria-hidden="true"></div>
+          </div>
         </div>
-        <div>
-          <div class="meter-head"><span class="tag">Monthly plan, resets on the 1st (UTC)</span><b id="month-n">10,000 / 10,000</b></div>
-          <div class="cells flat" style="--n:1" id="month-cells" aria-hidden="true"></div>
-        </div>
-      </div>
-      <div class="pane resp">
-        <p class="status" id="status" role="status" aria-live="polite">Example response shown. Send a request to see yours.</p>
-        <ol class="trace" id="trace" aria-label="Checks this request passed"></ol>
-        <pre id="out" aria-label="Response">HTTP/1.1 429 Too Many Requests
+        <div class="pane resp">
+          <p class="status" id="status" role="status" aria-live="polite">Example response shown. Send a request to see yours.</p>
+          <ol class="trace" id="trace" aria-label="Checks this request passed"></ol>
+          <pre id="out" aria-label="Response">HTTP/1.1 429 Too Many Requests
 RateLimit-Limit: 10
 RateLimit-Remaining: 0
 RateLimit-Reset: 1
@@ -132,65 +159,71 @@ Retry-After: 1
 Content-Type: application/json
 
 {"error":"rate_limited","reason":"burst","retryAfter":1,"message":"Too many requests for the free tier (this route costs 5 units). Retry in 1s."}</pre>
+        </div>
+        <div class="pane hist">
+          <p class="tag">Last requests</p>
+          <ol class="chips" id="chips" aria-label="Request history"><li class="muted">none yet</li></ol>
+        </div>
       </div>
-      <div class="pane hist">
-        <p class="tag">Last requests</p>
-        <ol class="chips" id="chips" aria-label="Request history"><li class="muted">none yet</li></ol>
-      </div>
-    </div>
-    <div class="meta"><div><h3>Same GCRA as the gateway</h3><p>Every request here also pings the globe above.</p></div><span class="hint">[ Click to send ]</span></div>
-  </article>
+      <div class="meta"><div><h3>Same GCRA as the gateway</h3><p>Your requests also show up in the window and on the globe.</p></div><span class="hint">[ Click to send ]</span></div>
+    </article>
+  </div>
 </section>
 
 <section class="sec" id="how" aria-labelledby="how-h">
-  <div class="sec-head rv">
-    <p class="label">Pipeline</p>
-    <h2 id="how-h">Six checks, in this order.</h2>
-    <p>Every request walks the same six checks. Pick what happens to one and watch where it stops.</p>
-  </div>
-  <div class="scen rv" role="group" aria-label="Scenario">
-    <button type="button" data-stop="-1" aria-pressed="true">Allowed</button>
-    <button type="button" data-stop="3" aria-pressed="false">Burst empty</button>
-    <button type="button" data-stop="4" aria-pressed="false">Plan used up</button>
-    <button type="button" data-stop="0" aria-pressed="false">Client banned</button>
-  </div>
-  <div class="slab rv">
-    <ol class="rows" id="pipe">
-      <li class="cv stage"><span class="k">01 · ban</span><div><h3>Ban check</h3><p>Clients in a cooldown get a 429 before anything else runs.</p></div><span class="st"></span></li>
-      <li class="cv stage"><span class="k">02 · who</span><div><h3>Who is it</h3><p>The API key maps to a tenant and tier. No key means the anonymous tier, limited per client IP.</p></div><span class="st"></span></li>
-      <li class="cv stage"><span class="k">03 · cost</span><div><h3>Cost</h3><p>The longest matching route prefix sets the price. Unlisted routes cost 1.</p></div><span class="st"></span></li>
-      <li class="cv stage"><span class="k">04 · burst</span><div><h3>Burst</h3><p>GCRA enforces the per-second rate with a burst allowance.</p></div><span class="st"></span></li>
-      <li class="cv stage"><span class="k">05 · monthly</span><div><h3>Monthly</h3><p>The plan's units are spent only after burst passed.</p></div><span class="st"></span></li>
-      <li class="cv stage"><span class="k">06 · respond</span><div><h3>Headers or 429</h3><p>RateLimit-Limit, -Remaining and -Reset on every response. A block adds Retry-After and a JSON reason.</p></div><span class="st"></span></li>
-    </ol>
-    <div class="cv out"><span class="k">outcome</span><p id="outcome" role="status" aria-live="polite"></p></div>
-    <div class="cv"><span class="k">why</span><div><h3>Why burst comes first</h3><p>A request the burst limiter rejects never bills the plan; the reverse order would need a refund. A monthly reject does burn burst tokens, but those refill on their own.</p></div></div>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">03</span>
+    <div class="head rv">
+      <p class="label">Pipeline</p>
+      <h2 id="how-h">Six checks, <em>in this order.</em></h2>
+      <p>Every request walks the same six checks. Pick what happens to one and watch where it stops.</p>
+    </div>
+    <div class="scen rv" role="group" aria-label="Scenario">
+      <button type="button" data-stop="-1" aria-pressed="true">Allowed</button>
+      <button type="button" data-stop="3" aria-pressed="false">Burst empty</button>
+      <button type="button" data-stop="4" aria-pressed="false">Plan used up</button>
+      <button type="button" data-stop="0" aria-pressed="false">Client banned</button>
+    </div>
+    <div class="card slab rv">
+      <ol class="rows" id="pipe">
+        <li class="cv stage"><span class="k">01 · ban</span><div><h3>Ban check</h3><p>Clients in a cooldown get a 429 before anything else runs.</p></div><span class="st"></span></li>
+        <li class="cv stage"><span class="k">02 · who</span><div><h3>Who is it</h3><p>The API key maps to a tenant and tier. No key means the anonymous tier, limited per client IP.</p></div><span class="st"></span></li>
+        <li class="cv stage"><span class="k">03 · cost</span><div><h3>Cost</h3><p>The longest matching route prefix sets the price. Unlisted routes cost 1.</p></div><span class="st"></span></li>
+        <li class="cv stage"><span class="k">04 · burst</span><div><h3>Burst</h3><p>GCRA enforces the per-second rate with a burst allowance.</p></div><span class="st"></span></li>
+        <li class="cv stage"><span class="k">05 · monthly</span><div><h3>Monthly</h3><p>The plan's units are spent only after burst passed.</p></div><span class="st"></span></li>
+        <li class="cv stage"><span class="k">06 · respond</span><div><h3>Headers or 429</h3><p>RateLimit-Limit, -Remaining and -Reset on every response. A block adds Retry-After and a JSON reason.</p></div><span class="st"></span></li>
+      </ol>
+      <div class="cv out"><span class="k">outcome</span><p id="outcome" role="status" aria-live="polite"></p></div>
+      <div class="cv"><span class="k">why</span><div><h3>Why burst comes first</h3><p>A request the burst limiter rejects never bills the plan; the reverse order would need a refund. A monthly reject does burn burst tokens, but those refill on their own.</p></div></div>
+    </div>
   </div>
 </section>
 
 <section class="sec" id="start" aria-labelledby="start-h">
-  <div class="sec-head rv">
-    <p class="label">Quickstart</p>
-    <h2 id="start-h">Run it in front of your app.</h2>
-    <p>Three steps from nothing to a limited API with a live dashboard.</p>
-  </div>
-  <ol class="slab rows rv">
-    <li class="cv">
-      <span class="k">01</span>
-      <div class="step"><h3>Install</h3><p>Go, standard library only. One binary.</p>
-        <div class="cb"><div class="cb-head"><span>terminal</span><button class="copy" type="button" data-copy="install3">Copy</button></div><pre id="install3">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</pre></div>
-      </div>
-    </li>
-    <li class="cv">
-      <span class="k">02</span>
-      <div class="step"><h3>Put it in front</h3><p>As a proxy, with Docker compose, or as Go middleware.</p>
-        <div class="tabs" role="tablist" aria-label="Setup method">
-          <button role="tab" id="t0" aria-controls="p0" aria-selected="true">Proxy</button>
-          <button role="tab" id="t1" aria-controls="p1" aria-selected="false" tabindex="-1">Docker compose</button>
-          <button role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1">Go middleware</button>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">04</span>
+    <div class="head rv">
+      <p class="label">Quickstart</p>
+      <h2 id="start-h">Run it <em>in front of your app.</em></h2>
+      <p>Three steps from nothing to a limited API with a live dashboard.</p>
+    </div>
+    <ol class="card slab rows rv">
+      <li class="cv">
+        <span class="k">01</span>
+        <div class="step"><h3>Install</h3><p>Go, standard library only. One binary.</p>
+          <div class="cb"><div class="cb-head"><span>terminal</span><button class="copy" type="button" data-copy="install3">Copy</button></div><pre id="install3">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</pre></div>
         </div>
-        <div class="cb" role="tabpanel" id="p0" aria-labelledby="t0" tabindex="0">
-          <div class="cb-head"><span>One binary in front of any site. Dashboard at /_limitplane/.</span><button class="copy" type="button" data-copy="c0">Copy</button></div>
+      </li>
+      <li class="cv">
+        <span class="k">02</span>
+        <div class="step"><h3>Put it in front</h3><p>As a proxy, with Docker compose, or as Go middleware.</p>
+          <div class="tabs" role="tablist" aria-label="Setup method">
+            <button role="tab" id="t0" aria-controls="p0" aria-selected="true">Proxy</button>
+            <button role="tab" id="t1" aria-controls="p1" aria-selected="false" tabindex="-1">Docker compose</button>
+            <button role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1">Go middleware</button>
+          </div>
+          <div class="cb" role="tabpanel" id="p0" aria-labelledby="t0" tabindex="0">
+            <div class="cb-head"><span>One binary in front of any site. Dashboard at /_limitplane/.</span><button class="copy" type="button" data-copy="c0">Copy</button></div>
 <pre id="c0"><span class="c"># demo app and dashboard on :8080</span>
 limitplane
 
@@ -201,9 +234,9 @@ limitplane --upstream http://localhost:3000
 limitplane --upstream http://localhost:3000 \
   --config limitplane.example.json \
   --redis redis://localhost:6379</pre>
-        </div>
-        <div class="cb" role="tabpanel" id="p1" aria-labelledby="t1" tabindex="0" hidden>
-          <div class="cb-head"><span>The limiter and Redis, with your policy mounted in.</span><button class="copy" type="button" data-copy="c1">Copy</button></div>
+          </div>
+          <div class="cb" role="tabpanel" id="p1" aria-labelledby="t1" tabindex="0" hidden>
+            <div class="cb-head"><span>The limiter and Redis, with your policy mounted in.</span><button class="copy" type="button" data-copy="c1">Copy</button></div>
 <pre id="c1"><span class="c"># docker-compose.yml, trimmed from the repo's own</span>
 services:
   redis:
@@ -219,9 +252,9 @@ services:
       - ./limitplane.example.json:/etc/limitplane/config.json:ro
     ports: ["8080:8080"]
     depends_on: [redis, origin]</pre>
-        </div>
-        <div class="cb" role="tabpanel" id="p2" aria-labelledby="t2" tabindex="0" hidden>
-          <div class="cb-head"><span>Plain net/http middleware inside the module.</span><button class="copy" type="button" data-copy="c2">Copy</button></div>
+          </div>
+          <div class="cb" role="tabpanel" id="p2" aria-labelledby="t2" tabindex="0" hidden>
+            <div class="cb-head"><span>Plain net/http middleware inside the module.</span><button class="copy" type="button" data-copy="c2">Copy</button></div>
 <pre id="c2"><span class="c">// inside the limitplane module: the packages live under internal/</span>
 cfg, err := policy.Load("limitplane.example.json")
 if err != nil { log.Fatal(err) }
@@ -232,13 +265,13 @@ gw := gateway.New(gateway.Config{
     Quota:   limiter.NewLocalQuota(),
 })
 log.Fatal(http.ListenAndServe(":8080", gw.Middleware(mux)))</pre>
+          </div>
         </div>
-      </div>
-    </li>
-    <li class="cv" id="policy">
-      <span class="k">03</span>
-      <div class="step"><h3>Write the policy</h3><p>One JSON file. Edit it on disk or send SIGHUP: it is validated, then swapped in atomically, no restart. Unlisted routes cost 1.</p>
-        <div class="cb"><div class="cb-head"><span>limitplane.example.json</span><button class="copy" type="button" data-copy="c3">Copy</button></div>
+      </li>
+      <li class="cv" id="policy">
+        <span class="k">03</span>
+        <div class="step"><h3>Write the policy</h3><p>One JSON file. Edit it on disk or send SIGHUP: it is validated, then swapped in atomically, no restart. Unlisted routes cost 1.</p>
+          <div class="cb"><div class="cb-head"><span>limitplane.example.json</span><button class="copy" type="button" data-copy="c3">Copy</button></div>
 <pre id="c3">{
   "tiers": {
     "free": { "rate": { "limit": 5, "period": "1s", "burst": 10 },
@@ -254,67 +287,73 @@ log.Fatal(http.ListenAndServe(":8080", gw.Middleware(mux)))</pre>
   "keys": { "demo-free-key": { "id": "acme", "tier": "free" } },
   "anonymous": "free"
 }</pre></div>
-      </div>
-    </li>
-    <li class="cv">
-      <span class="k">dashboard</span>
-      <div class="step"><h3>Every decision on a live dashboard</h3><p>In proxy mode it lives at <code>/_limitplane/</code> on the same port. The admin key is printed once at startup unless you pass <code>--admin-key</code>. Clients send their key as <code>X-Api-Key</code>. The example config ships three:</p>
-        <table class="keys"><thead><tr><th scope="col">Key</th><th scope="col">Tenant</th><th scope="col">Tier</th></tr></thead>
-          <tbody><tr><td><code>demo-free-key</code></td><td>acme</td><td>free</td></tr><tr><td><code>demo-pro-key</code></td><td>globex</td><td>pro</td></tr><tr><td><code>demo-enterprise-key</code></td><td>initech</td><td>enterprise</td></tr></tbody></table>
-      </div>
-    </li>
-  </ol>
+        </div>
+      </li>
+      <li class="cv">
+        <span class="k">dashboard</span>
+        <div class="step"><h3>Every decision on a live dashboard</h3><p>In proxy mode it lives at <code>/_limitplane/</code> on the same port. The admin key is printed once at startup unless you pass <code>--admin-key</code>. Clients send their key as <code>X-Api-Key</code>. The example config ships three:</p>
+          <table class="keys"><thead><tr><th scope="col">Key</th><th scope="col">Tenant</th><th scope="col">Tier</th></tr></thead>
+            <tbody><tr><td><code>demo-free-key</code></td><td>acme</td><td>free</td></tr><tr><td><code>demo-pro-key</code></td><td>globex</td><td>pro</td></tr><tr><td><code>demo-enterprise-key</code></td><td>initech</td><td>enterprise</td></tr></tbody></table>
+        </div>
+      </li>
+    </ol>
+  </div>
 </section>
 
 <section class="sec" id="plans" aria-labelledby="plans-h">
-  <div class="sec-head rv">
-    <p class="label">Plans</p>
-    <h2 id="plans-h">Three tiers, priced in units.</h2>
-    <p>These are the tiers in <code>limitplane.example.json</code>. A unit is what a route costs, so the same plan buys more health checks than AI calls.</p>
-  </div>
-  <div class="slab rows rv">
-    <article class="cv plan">
-      <span class="k">free</span>
-      <p class="big">5<small>units / s · burst 10</small></p>
-      <ul>
-        <li>10,000 units a month</li>
-        <li class="muted">2,000 AI calls or 10,000 health checks</li>
-        <li>Default for anonymous clients, per client IP</li>
-      </ul>
-      <a class="more" href="#play" data-tier="free">Try free in the playground <span class="go" aria-hidden="true">→</span></a>
-    </article>
-    <article class="cv plan">
-      <span class="k">pro</span>
-      <p class="big">50<small>units / s · burst 100</small></p>
-      <ul>
-        <li>1,000,000 units a month</li>
-        <li class="muted">200,000 AI calls</li>
-        <li>Alert at 80% of the plan</li>
-        <li>Per-tenant key, e.g. <code>demo-pro-key</code></li>
-      </ul>
-      <a class="more" href="#play" data-tier="pro">Try pro in the playground <span class="go" aria-hidden="true">→</span></a>
-    </article>
-    <article class="cv plan">
-      <span class="k">enterprise</span>
-      <p class="big">500<small>units / s · burst 1,000</small></p>
-      <ul>
-        <li>No monthly cap: leave <code>monthly</code> out of the tier</li>
-        <li>Burst limits and autopilot bans still apply</li>
-        <li>Add as many tiers and keys as you need</li>
-        <li>Hot-reloaded when the file changes</li>
-      </ul>
-      <a class="more" href="#policy">See the config <span class="go" aria-hidden="true">→</span></a>
-    </article>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">05</span>
+    <div class="head rv">
+      <p class="label">Plans</p>
+      <h2 id="plans-h">Three tiers, <em>priced in units.</em></h2>
+      <p>These are the tiers in <code>limitplane.example.json</code>. A unit is what a route costs, so the same plan buys more health checks than AI calls.</p>
+    </div>
+    <div class="card slab rows rv">
+      <article class="cv plan">
+        <span class="k">free</span>
+        <p class="big">5<small>units / s · burst 10</small></p>
+        <ul>
+          <li>10,000 units a month</li>
+          <li class="muted">2,000 AI calls or 10,000 health checks</li>
+          <li>Default for anonymous clients, per client IP</li>
+        </ul>
+        <a class="more" href="#play" data-tier="free">Try free in the playground <span class="go" aria-hidden="true">→</span></a>
+      </article>
+      <article class="cv plan">
+        <span class="k">pro</span>
+        <p class="big">50<small>units / s · burst 100</small></p>
+        <ul>
+          <li>1,000,000 units a month</li>
+          <li class="muted">200,000 AI calls</li>
+          <li>Alert at 80% of the plan</li>
+          <li>Per-tenant key, e.g. <code>demo-pro-key</code></li>
+        </ul>
+        <a class="more" href="#play" data-tier="pro">Try pro in the playground <span class="go" aria-hidden="true">→</span></a>
+      </article>
+      <article class="cv plan">
+        <span class="k">enterprise</span>
+        <p class="big">500<small>units / s · burst 1,000</small></p>
+        <ul>
+          <li>No monthly cap: leave <code>monthly</code> out of the tier</li>
+          <li>Burst limits and autopilot bans still apply</li>
+          <li>Add as many tiers and keys as you need</li>
+          <li>Hot-reloaded when the file changes</li>
+        </ul>
+        <a class="more" href="#policy">See the config <span class="go" aria-hidden="true">→</span></a>
+      </article>
+    </div>
   </div>
 </section>
 
 <section class="sec" id="under" aria-labelledby="under-h">
-  <div class="sec-head rv">
-    <p class="label">Under the hood</p>
-    <h2 id="under-h">Small state, honest failure.</h2>
-  </div>
-  <div class="slab rows rv">
-    <div class="cv"><span class="k">gcra</span><div><h3>One int64 per key</h3><p>A token bucket needs a count and a refill time. GCRA keeps one number, the theoretical arrival time, so a check is one compare and one write: no float math, sharded in memory, zero allocations.</p>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">06</span>
+    <div class="head rv">
+      <p class="label">Under the hood</p>
+      <h2 id="under-h">Small state, <em>honest failure.</em></h2>
+    </div>
+    <div class="card slab rows rv">
+      <div class="cv"><span class="k">gcra</span><div><h3>One int64 per key</h3><p>A token bucket needs a count and a refill time. GCRA keeps one number, the theoretical arrival time, so a check is one compare and one write: no float math, sharded in memory, zero allocations.</p>
 <pre><span class="c">// the check, trimmed from internal/limiter/rate.go</span>
 if tat &lt; now { tat = now }
 next := tat + cost*t            <span class="c">// t = time per unit</span>
@@ -322,58 +361,77 @@ if next-burst*t &gt; now {
     return blocked(retryAfter)  <span class="c">// tat is not stored</span>
 }
 return allowed(next)</pre></div></div>
-    <div class="cv"><span class="k">redis</span><div><h3>One script</h3><p>The same algorithm runs as one Lua script that reads Redis <code>TIME</code>, so clock skew between replicas can't leak extra burst.</p>
-      <div class="flow" aria-hidden="true"><div class="col"><div>replica A</div><div>replica B</div></div><span>&rarr;</span><div class="lua">Lua + Redis TIME</div></div></div></div>
-    <div class="cv"><span class="k">redis down</span><div><h3>Degrade, or fail closed</h3><p>A circuit breaker routes to the local limiter and marks each decision <code>degraded</code>. With <code>--fail-closed</code> you get a 503 instead.</p></div></div>
-    <div class="cv"><span class="k">autopilot</span><div><h3>Bans and labels</h3><p>Bans a client after repeated burst blocks and labels clients human, bot, crawler or retry bug from request timing. A heuristic, not a model.</p>
-      <div class="figs"><div><b>20</b><span>burst blocks</span></div><div><b>10s</b><span>window</span></div><div><b>5m</b><span>ban</span></div></div></div></div>
-    <div class="cv"><span class="k">trust</span><div><h3>Trust nothing by default</h3><p><code>X-Forwarded-For</code> counts only with <code>--trust-proxy</code>, and then only the right-most untrusted hop. Set <code>--metrics-key</code> in proxy mode: <code>/metrics</code> lists tenant ids.</p></div></div>
+      <div class="cv"><span class="k">redis</span><div><h3>One script</h3><p>The same algorithm runs as one Lua script that reads Redis <code>TIME</code>, so clock skew between replicas can't leak extra burst.</p>
+        <div class="flow" aria-hidden="true"><div class="col"><div>replica A</div><div>replica B</div></div><span>&rarr;</span><div class="lua">Lua + Redis TIME</div></div></div></div>
+      <div class="cv"><span class="k">redis down</span><div><h3>Degrade, or fail closed</h3><p>A circuit breaker routes to the local limiter and marks each decision <code>degraded</code>. With <code>--fail-closed</code> you get a 503 instead.</p></div></div>
+      <div class="cv"><span class="k">autopilot</span><div><h3>Bans and labels</h3><p>Bans a client after repeated burst blocks and labels clients human, bot, crawler or retry bug from request timing. A heuristic, not a model.</p>
+        <div class="figs"><div><b>20</b><span>burst blocks</span></div><div><b>10s</b><span>window</span></div><div><b>5m</b><span>ban</span></div></div></div></div>
+      <div class="cv"><span class="k">trust</span><div><h3>Trust nothing by default</h3><p><code>X-Forwarded-For</code> counts only with <code>--trust-proxy</code>, and then only the right-most untrusted hop. Set <code>--metrics-key</code> in proxy mode: <code>/metrics</code> lists tenant ids.</p></div></div>
+    </div>
   </div>
 </section>
 
 <section class="sec" id="bench" aria-labelledby="bench-h">
-  <p class="divider" aria-hidden="true"><span>Performance</span></p>
-  <div class="sec-head rv"><h2 id="bench-h">Cheap enough to run on every request.</h2></div>
-  <article class="card rv">
-    <div class="inner bench">
-      <div class="fig"><div class="n">41<small>ns</small></div><p>for one GCRA check, with 0 allocations.</p></div>
-      <ul class="bars">
-        <li class="hot" style="--v:16.1;--d:0ms"><span class="v">41<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, one key<i>0 allocs</i></span></li>
-        <li style="--v:16.5;--d:80ms"><span class="v">42<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, 512 keys<i>0 allocs</i></span></li>
-        <li style="--v:11.4;--d:160ms"><span class="v">29<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">512 keys, parallel<i>0 allocs</i></span></li>
-        <li style="--v:100;--d:240ms"><span class="v">254<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Gateway middleware, no-op limiter<i>6 allocs</i></span></li>
-        <li style="--v:20.9;--d:320ms"><span class="v">53<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Stats and SSE hub, per decision<i>0 allocs</i></span></li>
-      </ul>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">07</span>
+    <div class="head rv">
+      <p class="label">Performance</p>
+      <h2 id="bench-h">Cheap enough to run <em>on every request.</em></h2>
     </div>
-    <div class="meta"><div><h3>Apple M5, Go 1.26</h3><p>Reproduce with <code>make bench</code>. The middleware figure is dominated by <code>net/http</code> header handling, not the limiter. Redis-backed checks are bounded by one network round trip, so measure them on your own network.</p></div><a class="go" href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md" aria-label="Read BENCHMARKS.md">↗</a></div>
-  </article>
+    <article class="card rv">
+      <div class="bench">
+        <div class="fig"><div class="n">41<small>ns</small></div><p>for one GCRA check, with 0 allocations.</p></div>
+        <ul class="bars">
+          <li class="hot" style="--v:16.1;--d:0ms"><span class="v">41<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, one key<i>0 allocs</i></span></li>
+          <li style="--v:16.5;--d:80ms"><span class="v">42<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, 512 keys<i>0 allocs</i></span></li>
+          <li style="--v:11.4;--d:160ms"><span class="v">29<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">512 keys, parallel<i>0 allocs</i></span></li>
+          <li style="--v:100;--d:240ms"><span class="v">254<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Gateway middleware, no-op limiter<i>6 allocs</i></span></li>
+          <li style="--v:20.9;--d:320ms"><span class="v">53<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Stats and SSE hub, per decision<i>0 allocs</i></span></li>
+        </ul>
+      </div>
+      <div class="meta"><div><h3>Apple M5, Go 1.26</h3><p>Reproduce with <code>make bench</code>. The middleware figure is dominated by <code>net/http</code> header handling, not the limiter. Redis-backed checks are bounded by one network round trip, so measure them on your own network.</p></div><a class="go" href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md" aria-label="Read BENCHMARKS.md">↗</a></div>
+    </article>
+  </div>
 </section>
 
-<section class="sec built" aria-label="Built with">
-  <p class="divider" aria-hidden="true"><span>Built with</span></p>
-  <ul class="marks"><li>Go</li><li>Redis</li><li>Docker</li><li>Kubernetes</li><li>Prometheus</li></ul>
+<section class="sec" aria-labelledby="built-h">
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">08</span>
+    <p class="label" id="built-h">Built with</p>
+    <ul class="marks"><li>Go</li><li>Redis</li><li>Docker</li><li>Kubernetes</li><li>Prometheus</li></ul>
+  </div>
 </section>
 
 <section class="sec cta" aria-labelledby="cta-h">
-  <h2 id="cta-h" class="rv">Put it in front of your API.</h2>
-  <p class="rv">Go, standard library only. One binary, a JSON policy, and a dashboard that shows every decision.</p>
-  <div class="cmdrow rv">
-    <div class="cmd"><code id="install2">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button class="icon" type="button" data-copy="install2" aria-label="Copy the install command"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 3.2V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v6.5a1 1 0 0 0 1 1h.2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></button></div>
-    <a class="btn primary" href="https://github.com/iammdzaidalam/limitplane">Read the source on GitHub</a>
+  <div class="wrap">
+    <span class="gut" aria-hidden="true">09</span>
+    <h2 id="cta-h" class="rv">Put it in front <em>of your API.</em></h2>
+    <p class="rv">Go, standard library only. One binary, a JSON policy, and a dashboard that shows every decision.</p>
+    <div class="cmdrow rv">
+      <div class="cmd"><code id="install2">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button class="icon" type="button" data-copy="install2" aria-label="Copy the install command"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 3.2V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v6.5a1 1 0 0 0 1 1h.2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></button></div>
+      <a class="btn dark" href="https://github.com/iammdzaidalam/limitplane">Read the source on GitHub</a>
+    </div>
   </div>
 </section>
 </main>
 
-<footer class="foot">
-  <div class="foot-grid">
-    <div class="foot-brand"><a class="brand" href="#top"><img src="favicon.svg" alt="">LimitPlane</a><p>Rate limits priced by what a request costs.</p></div>
-    <div><p class="label">Product</p><a href="#play">Playground</a><a href="#how">Pipeline</a><a href="#start">Quickstart</a><a href="#plans">Plans</a></div>
-    <div><p class="label">Docs</p><a href="https://github.com/iammdzaidalam/limitplane/blob/main/README.md">README</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Benchmarks</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/limitplane.example.json">Example policy</a></div>
-    <div><p class="label">Source</p><a href="https://github.com/iammdzaidalam/limitplane">GitHub</a><a href="https://github.com/iammdzaidalam/limitplane/tree/main/deploy/k8s">Kubernetes manifests</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/docker-compose.yml">docker-compose.yml</a></div>
+<footer class="sec foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand"><a class="brand" href="#top"><img src="favicon.svg" alt="">LimitPlane</a><p>Rate limits priced by what a request costs.</p></div>
+      <div><p class="label">Product</p><a href="#play">Playground</a><a href="#how">Pipeline</a><a href="#start">Quickstart</a><a href="#plans">Plans</a></div>
+      <div><p class="label">Docs</p><a href="https://github.com/iammdzaidalam/limitplane/blob/main/README.md">README</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Benchmarks</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/limitplane.example.json">Example policy</a></div>
+      <div><p class="label">Source</p><a href="https://github.com/iammdzaidalam/limitplane">GitHub</a><a href="https://github.com/iammdzaidalam/limitplane/tree/main/deploy/k8s">Kubernetes manifests</a><a href="https://github.com/iammdzaidalam/limitplane/blob/main/docker-compose.yml">docker-compose.yml</a></div>
+    </div>
+    <div class="mark" id="mark" aria-hidden="true"></div>
+    <div class="end"><span>LimitPlane</span><span>Bars are route costs; the red tops are what the limit line would turn away.</span></div>
   </div>
-  <div class="mark" id="mark" aria-hidden="true"></div>
-  <div class="end"><span>LimitPlane</span><span>Bars are route costs; the red tops are what the limit line would turn away.</span></div>
 </footer>
+
+<div class="bbar" id="bbar">
+  <a class="btn" href="https://github.com/iammdzaidalam/limitplane/blob/main/README.md">Read the docs</a>
+  <a class="btn primary" href="#play">Try the limiter</a>
+</div>
 
 <dialog class="pal" id="pal" aria-label="Command palette">
   <input id="pal-q" type="text" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Jump to a section or run an action">
