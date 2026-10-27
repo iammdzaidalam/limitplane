@@ -79,6 +79,7 @@ function start() {
   $('#try').hidden = proxied
   refresh(true)
   loadPolicy()
+  api('audit?limit=30').then(a => a.reverse().forEach(feedRow)).catch(() => {})
   connect()
   timers.push(setInterval(refresh, 4000), setInterval(() => { advance(); draw() }, 1000))
 }
@@ -213,6 +214,10 @@ function onDecision(d) {
   const b = series.find(p => p.t === t) || series[series.length - 1]
   if (b) d.allowed ? b.allowed++ : b.blocked++
 
+  feedRow(d)
+}
+
+function feedRow(d) {
   $('#feedEmpty').hidden = true
   const feed = $('#feed')
   const cls = d.allowed ? 'ok' : d.reason === 'banned' ? 'bad' : 'warn'
