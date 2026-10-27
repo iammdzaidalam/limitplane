@@ -4,220 +4,349 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LimitPlane: rate limits priced by cost</title>
-<meta name="description" content="A multi-tenant rate-limiting gateway in Go. Price each route by what it costs you, budget per tenant, cap per month, share limits through Redis.">
+<meta name="description" content="A rate-limiting gateway in Go that prices each request by route cost, with a burst bucket and a monthly plan per tenant, shared through Redis. Try the limiter in your browser.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap">
-<script>try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElement.dataset.theme = t } catch {}</script>
-<style>
-:root {
-  --bg: #f5f5f7; --card: #fff; --fg: #1d1d1f; --muted: #6b6b6b;
-  --line: rgb(29 29 31 / .1); --surface: rgb(29 29 31 / .05);
-  --ok: #1a7f37; --bad: #cf222e; --info: #0969da; --hl: #cde1f4;
-  --sans: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --serif: "Instrument Serif", Georgia, serif;
-  --ease: cubic-bezier(.32, .72, 0, 1);
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme=light]) {
-    --bg: #09090c; --card: #141417; --fg: #f5f5f7; --muted: #8f8f8f;
-    --line: rgb(245 245 247 / .1); --surface: rgb(245 245 247 / .05);
-    --ok: #39d353; --bad: #f85149; --info: #58a6ff; --hl: #23405f;
-    color-scheme: dark;
-  }
-}
-:root[data-theme=dark] {
-  --bg: #09090c; --card: #141417; --fg: #f5f5f7; --muted: #8f8f8f;
-  --line: rgb(245 245 247 / .1); --surface: rgb(245 245 247 / .05);
-  --ok: #39d353; --bad: #f85149; --info: #58a6ff; --hl: #23405f;
-  color-scheme: dark;
-}
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
-a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--line); transition: text-decoration-color .2s var(--ease); }
-a:hover { text-decoration-color: currentColor; }
-:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 6px; }
-.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
-nav { display: flex; align-items: center; gap: 16px; white-space: nowrap; padding: 18px 0; font-size: 14px; }
-nav .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -.02em; text-decoration: none; }
-nav .brand img { width: 22px; height: 22px; }
-nav .spacer { flex: 1; }
-nav a:not(.brand) { color: var(--muted); text-decoration: none; }
-nav a:not(.brand):hover { color: var(--fg); }
-button { font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; }
-#theme { width: 32px; height: 32px; flex: none; }
-@media (max-width: 480px) { nav .wide { display: none; } }
-
-h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -.02em; line-height: 1.05; margin: 0; }
-h1 { font-size: clamp(44px, 9vw, 80px); margin-top: 72px; }
-h1 em, h2 em { color: var(--muted); }
-h2 { font-size: clamp(32px, 6vw, 44px); margin-bottom: 16px; }
-h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
-.lede { font-size: 19px; color: var(--muted); max-width: 640px; margin: 24px 0 32px; }
-.label { font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
-section { padding: 64px 0; border-top: 1px solid var(--line); }
-section p { max-width: 680px; }
-.muted { color: var(--muted); }
-
-.cmd { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 12px 12px 16px; font: 14px var(--mono); max-width: 100%; }
-.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; }
-.cmd button { padding: 4px 10px; font-size: 12px; flex: none; }
-.ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 14px; }
-.ctas a { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); text-decoration: none; }
-.ctas a.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-
-pre { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; font: 13px/1.6 var(--mono); margin: 16px 0; }
-code { font-family: var(--mono); font-size: .9em; }
-p code, li code { background: var(--surface); padding: 1px 5px; border-radius: 4px; }
-.c { color: var(--muted); } .g { color: var(--ok); } .r { color: var(--bad); }
-
-.costs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 24px; }
-.costs div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-.costs code { display: block; color: var(--muted); }
-.costs b { font: 500 32px/1.2 var(--mono); letter-spacing: -.035em; }
-
-ol.pipe { list-style: none; padding: 0; margin: 24px 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; counter-reset: s; }
-ol.pipe li { background: var(--card); padding: 14px 16px 14px 56px; position: relative; counter-increment: s; }
-ol.pipe li::before { content: counter(s, decimal-leading-zero); position: absolute; left: 16px; top: 15px; font: 12px var(--mono); color: var(--muted); }
-ol.pipe p { margin: 0; color: var(--muted); font-size: 14px; }
-
-.grid2 { display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); margin-top: 24px; }
-.grid2 p { color: var(--muted); font-size: 15px; margin: 0; }
-footer { padding: 32px 0 48px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
-
-@media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-}
-</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap"> <!-- taste-skill-ignore -->
+<script>document.documentElement.classList.add('js');try{const t=localStorage.getItem('lp-theme');if(t)document.documentElement.dataset.theme=t}catch{}</script>
+<link rel="stylesheet" href="site.css">
 </head>
 <body>
-<div class="wrap">
-<nav>
-  <a class="brand" href="#"><img src="favicon.svg" alt="">LimitPlane</a>
-  <span class="spacer"></span>
-  <a class="wide" href="#how">How it works</a>
-  <a href="#start">Quickstart</a>
-  <a href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
-  <button id="theme" type="button" aria-label="Toggle theme">◐</button>
-</nav>
+<a class="skip" href="#play">Skip to the playground</a>
+<p class="sr" id="toast" role="status"></p>
 
-<header>
-  <h1>Rate limits priced by <em>what a request costs.</em></h1>
-  <p class="lede">LimitPlane is one Go binary you put in front of any HTTP service. A health check costs 1 unit, an AI call costs 5. Every tenant gets a per-second budget and a monthly cap, shared across replicas through Redis.</p>
-  <div class="cmd"><code id="install">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button type="button" data-copy="install">Copy</button></div>
-  <div class="ctas">
-    <a class="primary" href="#start">Get started</a>
-    <a href="https://github.com/iammdzaidalam/limitplane">Read the source</a>
-  </div>
+<header class="nav">
+  <nav class="pill" aria-label="Main">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="">LimitPlane</a>
+    <a class="opt" href="#play">Playground</a>
+    <a class="opt" href="#how">Pipeline</a>
+    <a class="opt" href="#start">Quickstart</a>
+    <a class="opt" href="#plans">Plans</a>
+    <a class="gh" href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
+    <button id="theme" type="button" aria-label="Toggle light or dark theme">◐</button>
+  </nav>
 </header>
 
-<section>
-  <p class="label">The idea</p>
-  <h2>Count cost, <em>not requests.</em></h2>
-  <p>Most limiters treat every request the same, so a client can stay under "100 requests a second" while spending all of your GPU budget. LimitPlane gives each route a price and each tenant a budget in units. Cheap calls stay cheap. Expensive calls drain the bucket faster.</p>
-  <div class="costs">
-    <div><code>GET /healthz</code><b>1</b> <span class="muted">unit</span></div>
-    <div><code>GET /v1/search</code><b>2</b> <span class="muted">units</span></div>
-    <div><code>POST /v1/generate</code><b>5</b> <span class="muted">units</span></div>
+<main id="top">
+<section class="board hero" aria-labelledby="h1">
+  <div class="tile s7 rv">
+    <h1 id="h1">Rate limits priced by <em>what a request costs.</em></h1>
+    <p class="lede">One Go binary in front of any HTTP service. A health check costs 1 unit, an AI call costs 5. Each tenant gets a burst budget and a monthly plan, shared across replicas through Redis.</p>
+    <div class="cmd"><code id="install">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button class="btn" type="button" data-copy="install">Copy</button></div>
+    <div class="row"><a class="btn fill" href="#play">Try the limiter</a><a class="btn" href="#start">Quickstart</a></div>
+  </div>
+
+  <div class="tile s5 live rv" data-ui id="live" role="group" aria-label="Live demo: the free tier bucket under simulated traffic">
+    <div class="live-head"><span class="tag">acme · free tier · 5 units/s</span><button class="btn" type="button" id="live-toggle" aria-pressed="false">Pause</button></div>
+    <div><span class="bignum" id="live-n">10</span><span class="muted mono">units left of 10</span></div>
+    <div class="cells" id="live-cells" aria-hidden="true"></div>
+    <ol class="stream" id="live-log" aria-hidden="true"></ol>
+  </div>
+
+  <div class="tile s3 price rv"><b>1<small>unit</small></b><span class="tag">GET /healthz</span></div>
+  <div class="tile s3 price rv"><b>2<small>units</small></b><span class="tag">POST /v1/embed</span></div>
+  <div class="tile s3 price acc rv"><b>5<small>units</small></b><span class="tag">POST /v1/generate</span></div>
+  <div class="tile s3 price alt rv"><b>41<small>ns</small></b><span class="tag">one GCRA check, 0 allocs</span></div>
+</section>
+
+<section class="board" id="play" aria-labelledby="play-h">
+  <div class="tile s5 r2 rv">
+    <div class="play-intro">
+      <h2 id="play-h">Hit the <em>real limiter.</em></h2>
+      <p>This is the same GCRA the gateway runs, ported to a few lines of JavaScript and running in your tab. Pick a tier, send requests, and watch the burst bucket and the monthly plan.</p>
+    </div>
+    <div class="ctl">
+      <fieldset>
+        <legend class="tag">Tier</legend>
+        <div class="seg" role="radiogroup" aria-label="Tier">
+          <label><input type="radio" name="tier" value="free" id="tier-free" checked><span>free</span></label>
+          <label><input type="radio" name="tier" value="pro" id="tier-pro"><span>pro</span></label>
+        </div>
+        <p class="tag" id="tier-note" style="margin-top:10px"></p>
+      </fieldset>
+      <button class="btn fill" type="button" data-send="GET /healthz">GET /healthz <small>(1)</small></button>
+      <button class="btn fill" type="button" data-send="POST /v1/generate">POST /v1/generate <small>(5)</small></button>
+      <button class="btn" type="button" id="flood">Flood x30 <small>30 AI calls</small></button>
+      <div class="row">
+        <button class="btn" type="button" id="month">Jump to month end</button>
+        <button class="btn" type="button" id="reset">Reset</button>
+      </div>
+    </div>
+    <ul class="try muted">
+      <li>On free, two AI calls drain the bucket and the third gets a burst 429.</li>
+      <li>Flood x30 trips autopilot: 20 burst blocks in 10 s earns a 5 minute ban.</li>
+      <li>Jump to month end, then send two AI calls to see a monthly 429.</li>
+    </ul>
+  </div>
+
+  <div class="tile s7 meters rv" data-ui>
+    <div>
+      <div class="meter-head"><span class="tag">Burst bucket <span id="burst-note"></span></span><b id="burst-n">10 / 10</b></div>
+      <div class="cells" id="burst-cells" aria-hidden="true"></div>
+      <p class="ban" id="ban" hidden></p>
+    </div>
+    <div>
+      <div class="meter-head"><span class="tag">Monthly plan, resets on the 1st (UTC)</span><b id="month-n">10,000 / 10,000</b></div>
+      <div class="cells flat" style="--n:1" id="month-cells" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <div class="tile s7 resp rv" data-ui>
+    <p class="status" id="status" role="status" aria-live="polite">Example response shown. Send a request to see yours.</p>
+    <ol class="trace" id="trace" aria-label="Checks this request passed"></ol>
+    <pre id="out" aria-label="Response">HTTP/1.1 429 Too Many Requests
+RateLimit-Limit: 10
+RateLimit-Remaining: 0
+RateLimit-Reset: 1
+Retry-After: 1
+Content-Type: application/json
+
+{"error":"rate_limited","reason":"burst","retryAfter":1,"message":"Too many requests for the free tier (this route costs 5 units). Retry in 1s."}</pre>
+  </div>
+
+  <div class="tile s12 alt rv">
+    <p class="tag" style="margin-bottom:10px">Last requests</p>
+    <ol class="chips" id="chips" aria-label="Request history"><li class="muted">none yet</li></ol>
   </div>
 </section>
 
-<section id="how">
-  <p class="label">Request pipeline</p>
-  <h2>Six steps, <em>in this order.</em></h2>
-  <ol class="pipe">
-    <li><h3>Ban check</h3><p>Clients in a cooldown get a 429 before anything else runs.</p></li>
-    <li><h3>Who is it</h3><p>The API key maps to a tenant and tier. No key means the anonymous tier, limited per client IP.</p></li>
-    <li><h3>Cost</h3><p>The longest matching route prefix sets the price. Unlisted routes cost 1.</p></li>
-    <li><h3>Monthly cap</h3><p>The plan's monthly units are checked first. No point rationing the speed of requests the plan can't pay for.</p></li>
-    <li><h3>Burst</h3><p>A GCRA limiter enforces the per-second rate with a burst allowance.</p></li>
-    <li><h3>Headers or 429</h3><p><code>RateLimit-Limit</code>, <code>-Remaining</code> and <code>-Reset</code> on every response. Denials add <code>Retry-After</code> and a JSON body.</p></li>
+<section class="board" id="how" aria-labelledby="how-h">
+  <div class="tile s12 pipe-head rv">
+    <div>
+      <h2 id="how-h">Six checks, <em>in this order.</em></h2>
+      <p class="lede">Every request walks the same six checks. Pick what happens to one and watch where it stops.</p>
+    </div>
+    <div class="scen" role="group" aria-label="Scenario">
+      <button type="button" data-stop="-1" aria-pressed="true">Allowed</button>
+      <button type="button" data-stop="3" aria-pressed="false">Burst empty</button>
+      <button type="button" data-stop="4" aria-pressed="false">Plan used up</button>
+      <button type="button" data-stop="0" aria-pressed="false">Client banned</button>
+    </div>
+  </div>
+  <ol class="pipe rv" data-ui id="pipe" style="list-style:none;margin:0;padding:0">
+    <li class="stage" style="--i:0"><h3>Ban check</h3><p>Clients in a cooldown get a 429 before anything else runs.</p><span class="st"></span></li>
+    <li class="stage" style="--i:1"><h3>Who is it</h3><p>The API key maps to a tenant and tier. No key means the anonymous tier, limited per client IP.</p><span class="st"></span></li>
+    <li class="stage" style="--i:2"><h3>Cost</h3><p>The longest matching route prefix sets the price. Unlisted routes cost 1.</p><span class="st"></span></li>
+    <li class="stage" style="--i:3"><h3>Burst</h3><p>GCRA enforces the per-second rate with a burst allowance.</p><span class="st"></span></li>
+    <li class="stage" style="--i:4"><h3>Monthly</h3><p>The plan's units are spent only after burst passed.</p><span class="st"></span></li>
+    <li class="stage" style="--i:5"><h3>Headers or 429</h3><p>RateLimit-Limit, -Remaining and -Reset on every response. A block adds Retry-After and a JSON reason.</p><span class="st"></span></li>
   </ol>
-<pre><span class="r">HTTP/1.1 429 Too Many Requests</span>
-RateLimit-Limit: 20
-RateLimit-Remaining: 0
-RateLimit-Reset: 3
-Retry-After: 3
-
-{"error":"rate_limited","reason":"burst","retryAfter":3,"message":"..."}</pre>
+  <div class="tile s7 alt rv"><p class="status" id="outcome" role="status" aria-live="polite" style="font-family:var(--sans);letter-spacing:0"></p></div>
+  <div class="tile s5 rv"><h3>Why burst comes first</h3><p class="muted">A request the burst limiter rejects never bills the plan; the reverse order would need a refund. A monthly reject does burn burst tokens, but those refill on their own.</p></div>
 </section>
 
-<section id="start">
-  <p class="label">Quickstart</p>
-  <h2>Run it <em>in front of your app.</em></h2>
-  <p>Point it at an upstream. The dashboard is served at <code>/_limitplane/</code> on the same port.</p>
-<pre><span class="c"># install</span>
-go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest
+<section class="board" id="start" aria-labelledby="start-h">
+  <div class="tile s4 rv">
+    <h2 id="start-h">Run it <em>in front of your app.</em></h2>
+    <div class="tabs" role="tablist" aria-label="Setup method" aria-orientation="vertical">
+      <button role="tab" id="t0" aria-controls="p0" aria-selected="true"><b>Proxy</b><span>One binary in front of any site. Dashboard at /_limitplane/.</span></button>
+      <button role="tab" id="t1" aria-controls="p1" aria-selected="false" tabindex="-1"><b>Docker compose</b><span>The limiter and Redis, with your policy mounted in.</span></button>
+      <button role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1"><b>Go middleware</b><span>Plain net/http middleware inside the module.</span></button>
+    </div>
+  </div>
+  <div class="tile s8 rv">
+    <div class="panel" role="tabpanel" id="p0" aria-labelledby="t0" tabindex="0">
+<pre id="c0"><span class="c"># demo app and dashboard on :8080</span>
+limitplane
 
-<span class="c"># proxy mode: meter everything going to :8080</span>
-limitplane --upstream http://localhost:8080
+<span class="c"># protect an existing site</span>
+limitplane --upstream http://localhost:3000
 
-<span class="c"># shared limits across replicas</span>
-limitplane --upstream http://localhost:8080 --redis redis://localhost:6379
+<span class="c"># your policy, limits shared through Redis</span>
+limitplane --upstream http://localhost:3000 \
+  --config limitplane.example.json \
+  --redis redis://localhost:6379</pre>
+      <button class="btn" type="button" data-copy="c0">Copy</button>
+    </div>
+    <div class="panel" role="tabpanel" id="p1" aria-labelledby="t1" tabindex="0" hidden>
+<pre id="c1"><span class="c"># docker-compose.yml, trimmed from the repo's own</span>
+services:
+  redis:
+    image: redis:7-alpine
+  origin:
+    image: nginx:alpine
+  limitplane:
+    build: .
+    command: ["--config", "/etc/limitplane/config.json",
+              "--redis", "redis://redis:6379",
+              "--upstream", "http://origin:80"]
+    volumes:
+      - ./limitplane.example.json:/etc/limitplane/config.json:ro
+    ports: ["8080:8080"]
+    depends_on: [redis, origin]</pre>
+      <button class="btn" type="button" data-copy="c1">Copy</button>
+    </div>
+    <div class="panel" role="tabpanel" id="p2" aria-labelledby="t2" tabindex="0" hidden>
+<pre id="c2"><span class="c">// inside the limitplane module: the packages live under internal/</span>
+cfg, err := policy.Load("limitplane.example.json")
+if err != nil { log.Fatal(err) }
 
-<span class="c"># no upstream: a demo app with /v1/ping and /v1/generate</span>
-limitplane</pre>
-  <p>Policy is a JSON file. Edit it on disk or from the dashboard; changes swap in without a restart.</p>
-<pre>{
-  "tiers": {
-    "free": { "rate": { "limit": 10, "period": "1s", "burst": 20 }, "monthly": 50000 },
-    "pro":  { "rate": { "limit": 100, "period": "1s", "burst": 200 } }
-  },
-  "routes": [{ "prefix": "/v1/generate", "cost": 5 }],
-  "keys": { "sk_acme": { "id": "acme", "tier": "pro" } },
-  "anonymous": "free"
-}</pre>
-  <p>Already writing Go? The gateway is plain <code>net/http</code> middleware.</p>
-<pre>gw := gateway.New(gateway.Config{
+gw := gateway.New(gateway.Config{
     Policy:  policy.NewStore(cfg),
     Limiter: limiter.NewLocal(),
     Quota:   limiter.NewLocalQuota(),
 })
-http.ListenAndServe(<span class="g">":8080"</span>, gw.Middleware(mux))</pre>
-</section>
-
-<section>
-  <p class="label">Under the hood</p>
-  <h2>Small state, <em>honest failure.</em></h2>
-  <div class="grid2">
-    <div><h3>GCRA</h3><p>Each key stores one timestamp, the theoretical arrival time. Allowing a request is one compare and one write. No token refill loop, no per-request timers.</p></div>
-    <div><h3>Redis</h3><p>With <code>--redis</code>, the check runs as one Lua script so concurrent replicas can't double-spend. The script is cached by SHA and reloaded if Redis restarts.</p></div>
-    <div><h3>When Redis is down</h3><p>Fails open to a local limiter by default and marks each decision as degraded, so you can see it. <code>--fail-closed</code> returns 503 instead.</p></div>
-    <div><h3>Autopilot</h3><p>Clients that keep hitting the burst limit get a short ban. Each client is labelled from its traffic pattern: human, bot, crawler, retry bug or warming up.</p></div>
+log.Fatal(http.ListenAndServe(<span class="g">":8080"</span>, gw.Middleware(mux)))</pre>
+      <button class="btn" type="button" data-copy="c2">Copy</button>
+    </div>
+  </div>
+  <div class="tile s7 alt rv">
+    <h3>The policy is one JSON file</h3>
+    <p class="muted" style="margin-bottom:16px;max-width:52ch">Edit it on disk or send SIGHUP. It is validated, then swapped in atomically, no restart. Unlisted routes cost 1.</p>
+<pre>{
+  "tiers": {
+    "free": { "rate": { "limit": 5, "period": "1s", "burst": 10 },
+              "monthly": 10000 },
+    "pro":  { "rate": { "limit": 50, "period": "1s", "burst": 100 },
+              "monthly": 1000000 }
+  },
+  "routes": [
+    { "prefix": "/healthz",     "cost": 1 },
+    { "prefix": "/v1/generate", "cost": 5 },
+    { "prefix": "/v1/embed",    "cost": 2 }
+  ],
+  "keys": { "demo-free-key": { "id": "acme", "tier": "free" } },
+  "anonymous": "free"
+}</pre>
+  </div>
+  <div class="tile s5 acc rv">
+    <h3>Every decision on a live dashboard</h3>
+    <p>In proxy mode it lives at <code>/_limitplane/</code> on the same port. The admin key is printed once at startup unless you pass <code>--admin-key</code>.</p>
+    <p style="margin-top:14px">Clients send their key as <code>X-Api-Key</code>. The example config ships three:</p>
+    <table class="keys"><thead><tr><th scope="col">Key</th><th scope="col">Tenant</th><th scope="col">Tier</th></tr></thead>
+      <tbody><tr><td><code>demo-free-key</code></td><td>acme</td><td>free</td></tr><tr><td><code>demo-pro-key</code></td><td>globex</td><td>pro</td></tr><tr><td><code>demo-enterprise-key</code></td><td>initech</td><td>enterprise</td></tr></tbody></table>
   </div>
 </section>
 
-<section>
-  <p class="label">Performance</p>
-  <h2>Benchmarks</h2>
-  <p>Numbers are in <a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>, with the machine and the command used to produce them. Run <code>go test -bench . ./internal/limiter/</code> to check them on your own hardware.</p>
+<section class="board" id="plans" aria-labelledby="plans-h">
+  <div class="tile plans-head rv">
+    <h2 id="plans-h">Three tiers, <em>priced in units.</em></h2>
+    <p class="lede">These are the tiers in <code>limitplane.example.json</code>. A unit is what a route costs, so the same plan buys more health checks than AI calls.</p>
+  </div>
+  <article class="tile plan p1 rv">
+    <div>
+      <h3>free</h3>
+      <p class="big">5<small>units / s</small></p>
+      <p class="muted">burst of 10</p>
+      <ul>
+        <li>10,000 units a month</li>
+        <li class="muted">2,000 AI calls or 10,000 health checks</li>
+        <li>Default for anonymous clients, per client IP</li>
+      </ul>
+    </div>
+    <a class="go" href="#play" data-tier="free">Try free in the playground <span aria-hidden="true">↗</span></a>
+  </article>
+  <article class="tile plan p2 rv">
+    <div>
+      <h3>pro</h3>
+      <p class="big">50<small>units / s</small></p>
+      <p class="muted">burst of 100</p>
+      <ul>
+        <li>1,000,000 units a month</li>
+        <li class="muted">200,000 AI calls</li>
+        <li>Alert at 80% of the plan</li>
+        <li>Per-tenant key, e.g. <code>demo-pro-key</code></li>
+      </ul>
+    </div>
+    <a class="go" href="#play" data-tier="pro">Try pro in the playground <span aria-hidden="true">↗</span></a>
+  </article>
+  <article class="tile plan p3 acc rv">
+    <div>
+      <h3>enterprise</h3>
+      <p class="big">500<small>units / s</small></p>
+      <p style="opacity:.8">burst of 1,000</p>
+      <ul>
+        <li>No monthly cap: leave <code>monthly</code> out of the tier</li>
+        <li>Burst limits and autopilot bans still apply</li>
+        <li>Add as many tiers and keys as you need</li>
+        <li>Hot-reloaded when the file changes</li>
+      </ul>
+    </div>
+    <a class="go" href="#start" style="background:var(--acc-fg);color:var(--acc)">See the config <span aria-hidden="true">↗</span></a>
+  </article>
 </section>
 
-<footer>
-  <span>LimitPlane</span>
-  <a href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
-  <a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Benchmarks</a>
-</footer>
-</div>
-<script>
-document.getElementById('theme').onclick = () => {
-  const root = document.documentElement
-  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
-  root.dataset.theme = dark ? 'light' : 'dark'
-  try { localStorage.setItem('lp-theme', root.dataset.theme) } catch {}
+<section class="board under" aria-labelledby="under-h">
+  <div class="tile s12 rv"><h2 id="under-h">Small state, <em>honest failure.</em></h2></div>
+  <div class="tile s7 rv">
+    <h3>GCRA, one int64 per key</h3>
+    <p>A token bucket needs a count and a refill time. GCRA keeps one number, the theoretical arrival time, so a check is one compare and one write: no float math, sharded in memory, zero allocations.</p>
+<pre><span class="c">// the check, trimmed from internal/limiter/rate.go</span>
+if tat &lt; now { tat = now }
+next := tat + cost*t            <span class="c">// t = time per unit</span>
+if next-burst*t &gt; now {
+    return blocked(retryAfter)  <span class="c">// tat is not stored</span>
 }
-document.querySelectorAll('[data-copy]').forEach(b => {
-  b.onclick = async () => {
-    try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = 'Copied' }
-    catch { b.textContent = 'Select and copy' }
-    setTimeout(() => { b.textContent = 'Copy' }, 1500)
-  }
-})
-</script>
+return allowed(next)</pre>
+  </div>
+  <div class="tile s5 alt rv">
+    <h3>Redis, one script</h3>
+    <p>The same algorithm runs as one Lua script that reads Redis <code>TIME</code>, so clock skew between replicas can't leak extra burst.</p>
+    <div class="flow" aria-hidden="true">
+      <div class="col"><div>replica A</div><div>replica B</div></div>
+      <span>&rarr;</span>
+      <div class="lua">Lua + Redis TIME</div>
+    </div>
+  </div>
+  <div class="tile s4 rv">
+    <h3>When Redis is down</h3>
+    <p>A circuit breaker routes to the local limiter and marks each decision <code>degraded</code>. With <code>--fail-closed</code> you get a 503 instead.</p>
+  </div>
+  <div class="tile s4 rv">
+    <h3>Autopilot</h3>
+    <p>Bans a client after repeated burst blocks and labels clients human, bot, crawler or retry bug from request timing. A heuristic, not a model.</p>
+    <div class="figs"><div><b>20</b><span>burst blocks</span></div><div><b>10s</b><span>window</span></div><div><b>5m</b><span>ban</span></div></div>
+  </div>
+  <div class="tile s4 rv">
+    <h3>Trust nothing by default</h3>
+    <p><code>X-Forwarded-For</code> counts only with <code>--trust-proxy</code>, and then only the right-most untrusted hop. Set <code>--metrics-key</code> in proxy mode: <code>/metrics</code> lists tenant ids.</p>
+  </div>
+</section>
+
+<section class="board" aria-labelledby="bench-h">
+  <div class="tile s12 bench rv" data-ui>
+    <div class="fig">
+      <h2 id="bench-h">Cheap enough to <em>run on every request.</em></h2>
+      <div><div class="n">41<small>ns</small></div><p>for one GCRA check, with 0 allocations.</p></div>
+    </div>
+    <ul class="bars">
+      <li class="hot" style="--v:16.1;--d:0ms"><span class="v">41<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, one key<i>0 allocs</i></span></li>
+      <li style="--v:16.5;--d:80ms"><span class="v">42<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">GCRA check, 512 keys<i>0 allocs</i></span></li>
+      <li style="--v:11.4;--d:160ms"><span class="v">29<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">512 keys, parallel<i>0 allocs</i></span></li>
+      <li style="--v:100;--d:240ms"><span class="v">254<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Gateway middleware, no-op limiter<i>6 allocs</i></span></li>
+      <li style="--v:20.9;--d:320ms"><span class="v">53<small>ns</small></span><span class="col"><span class="bar"></span></span><span class="l">Stats and SSE hub, per decision<i>0 allocs</i></span></li>
+    </ul>
+  </div>
+  <div class="tile s12 alt rv note"><p class="muted">Apple M5, Go 1.26; reproduce with <code>make bench</code>. The middleware figure is dominated by <code>net/http</code> header handling, not the limiter. Redis-backed checks are bounded by one network round trip, so measure them on your own network.</p><a class="btn" href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Read BENCHMARKS.md</a></div>
+</section>
+
+<section class="board cta" aria-labelledby="cta-h">
+  <div class="edge" aria-hidden="true"></div>
+  <div class="tile acc rv">
+    <h2 id="cta-h">Put it in front of your API.</h2>
+    <p>Go, standard library only. One binary, a JSON policy, and a dashboard that shows every decision.</p>
+    <div class="cmd"><code id="install2">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button class="btn cmdbtn" type="button" data-copy="install2">Copy</button></div>
+    <a class="btn fill" href="https://github.com/iammdzaidalam/limitplane">Read the source on GitHub</a>
+  </div>
+  <div class="edge" aria-hidden="true"></div>
+</section>
+</main>
+
+<footer class="board" style="margin-top:8px">
+  <div class="tile s12 rv">
+    <div class="mark" id="mark" aria-hidden="true"></div>
+    <div class="links">
+      <a href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
+      <a href="https://github.com/iammdzaidalam/limitplane/blob/main/README.md">README</a>
+      <a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Benchmarks</a>
+      <a href="#play">Playground</a>
+      <a href="#start">Quickstart</a>
+    </div>
+    <div class="end"><span>LimitPlane</span><span>Bars are route costs; the red tops are what the limit line would turn away.</span></div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
 </body>
 </html>
