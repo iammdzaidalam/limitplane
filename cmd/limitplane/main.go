@@ -40,6 +40,7 @@ func run() error {
 	cfgPath := flag.String("config", "", "policy JSON file (empty: built-in demo policy)")
 	redisURL := flag.String("redis", os.Getenv("REDIS_URL"), "shared Redis, e.g. redis://:pass@host:6379")
 	adminKey := flag.String("admin-key", os.Getenv("LIMITPLANE_ADMIN_KEY"), "dashboard/API key (empty: random, printed once)")
+	metricsKey := flag.String("metrics-key", os.Getenv("LIMITPLANE_METRICS_KEY"), "bearer key for /metrics (empty: public)")
 	trust := flag.Bool("trust-proxy", false, "trust X-Forwarded-For (only behind a proxy you control)")
 	failClosed := flag.Bool("fail-closed", false, "return 503 when the shared backend is down instead of falling back to local limits")
 	flag.Parse()
@@ -70,7 +71,7 @@ func run() error {
 
 	store := policy.NewStore(cfg)
 	srv := server.New(server.Config{
-		Policy: store, Limiter: lim, Quota: quota, AdminKey: *adminKey, Backend: backend,
+		Policy: store, Limiter: lim, Quota: quota, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
 		TrustProxy: *trust, FailClosed: *failClosed, Dashboard: web.FS,
 	})
 
@@ -81,6 +82,9 @@ func run() error {
 			return fmt.Errorf("bad --upstream %q", *upstream)
 		}
 		up = proxy(u, *trust)
+		if *metricsKey == "" {
+			log.Printf("warning: %s/metrics is public and lists tenant ids; set --metrics-key", server.AdminPrefix)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

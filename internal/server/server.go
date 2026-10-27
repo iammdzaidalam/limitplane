@@ -35,6 +35,7 @@ type Config struct {
 	Limiter    limiter.Limiter
 	Quota      limiter.Quota
 	AdminKey   string
+	MetricsKey string // empty: /metrics is public
 	Backend    string // "memory" or "redis"
 	TrustProxy bool
 	FailClosed bool
@@ -95,7 +96,7 @@ func (s *Server) Handler(upstream http.Handler) http.Handler {
 func (s *Server) admin() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
-	m.HandleFunc("GET /metrics", s.metrics)
+	m.HandleFunc("GET /metrics", s.metricsAuth)
 	m.HandleFunc("POST /api/login", s.login)
 	api := func(pattern string, h http.HandlerFunc) { m.Handle(pattern, s.auth(h, false)) }
 	api("GET /api/stats", s.stats)
@@ -159,6 +160,24 @@ func (s *Server) auth(h http.Handler, allowQuery bool) http.Handler {
 	})
 }
 
+// metricsAuth takes a static bearer key, since scrapers can't log in for a JWT.
+func (s *Server) metricsAuth(w http.ResponseWriter, r *http.Request) {
+	if k := s.cfg.MetricsKey; k != "" {
+		tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !equal(tok, k) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+	}
+	s.metrics(w, r)
+}
+
+// equal compares hashes so the time taken doesn't leak the key's length.
+func equal(a, b string) bool {
+	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
+}
+
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := gateway.ClientIP(r, s.cfg.TrustProxy)
 	res, err := s.cfg.Limiter.Allow(r.Context(), "login:"+ip, loginRate, 1)
@@ -172,9 +191,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 		return
 	}
-	// Hash first so the comparison is constant-time regardless of length.
-	a, b := sha256.Sum256([]byte(body.Key)), sha256.Sum256([]byte(s.cfg.AdminKey))
-	if s.cfg.AdminKey == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
+	if s.cfg.AdminKey == "" || !equal(body.Key, s.cfg.AdminKey) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid key"})
 		return
 	}

@@ -32,6 +32,7 @@ and a JSON body that says why.
 
 - **GCRA** instead of a token bucket: one int64 per key, no float math, sharded in memory with zero allocations.
 - **Redis:** the same algorithm in one Lua script that reads Redis `TIME`, so replica clock skew can't leak extra burst.
+- **Metrics:** `/metrics` is public unless you set `--metrics-key` (or `LIMITPLANE_METRICS_KEY`); scrapers then send `Authorization: Bearer <key>`. It lists tenant ids, so set it in proxy mode.
 - **Redis down:** a circuit breaker routes to the local limiter and marks decisions `degraded`. `--fail-closed` returns 503 instead.
 - **Autopilot:** bans a client after repeated burst blocks, alerts at 80% of a monthly plan, and labels clients (human, bot, crawler, retry bug) from request timing. The labels are a heuristic, not a model.
 - **Hot reload:** the policy is validated, then swapped atomically (file change or `SIGHUP`).

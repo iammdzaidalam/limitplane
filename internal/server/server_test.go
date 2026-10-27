@@ -208,3 +208,15 @@ func TestProxyMount(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsKey(t *testing.T) {
+	cfg, _ := policy.Parse([]byte(testPolicy))
+	s := New(Config{Policy: policy.NewStore(cfg), Limiter: limiter.NewLocal(), Quota: limiter.NewLocalQuota(), AdminKey: "a", MetricsKey: "scrape"})
+	ts := httptest.NewServer(s.Handler(nil))
+	defer ts.Close()
+	for tok, want := range map[string]int{"": 401, "nope": 401, "scrape": 200} {
+		if r := do(t, "GET", ts.URL+"/metrics", tok, ""); r.StatusCode != want {
+			t.Errorf("token %q: got %d, want %d", tok, r.StatusCode, want)
+		}
+	}
+}

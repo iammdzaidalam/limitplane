@@ -24,6 +24,8 @@ spec:
               valueFrom: {secretKeyRef: {name: limitplane-secrets, key: redis-url}}
             - name: LIMITPLANE_ADMIN_KEY
               valueFrom: {secretKeyRef: {name: limitplane-secrets, key: admin-key}}
+            - name: LIMITPLANE_METRICS_KEY
+              valueFrom: {secretKeyRef: {name: limitplane-secrets, key: metrics-key, optional: true}}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 5
