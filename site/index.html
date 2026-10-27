@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LimitPlane: rate limits priced by cost</title>
+<meta name="description" content="A multi-tenant rate-limiting gateway in Go. Price each route by what it costs you, budget per tenant, cap per month, share limits through Redis.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap">
+<script>try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElement.dataset.theme = t } catch {}</script>
+<style>
+:root {
+  --bg: #f5f5f7; --card: #fff; --fg: #1d1d1f; --muted: #6b6b6b;
+  --line: rgb(29 29 31 / .1); --surface: rgb(29 29 31 / .05);
+  --ok: #1a7f37; --bad: #cf222e; --info: #0969da; --hl: #cde1f4;
+  --sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --serif: "Instrument Serif", Georgia, serif;
+  --ease: cubic-bezier(.32, .72, 0, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    --bg: #09090c; --card: #141417; --fg: #f5f5f7; --muted: #8f8f8f;
+    --line: rgb(245 245 247 / .1); --surface: rgb(245 245 247 / .05);
+    --ok: #39d353; --bad: #f85149; --info: #58a6ff; --hl: #23405f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme=dark] {
+  --bg: #09090c; --card: #141417; --fg: #f5f5f7; --muted: #8f8f8f;
+  --line: rgb(245 245 247 / .1); --surface: rgb(245 245 247 / .05);
+  --ok: #39d353; --bad: #f85149; --info: #58a6ff; --hl: #23405f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--line); transition: text-decoration-color .2s var(--ease); }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 6px; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+nav { display: flex; align-items: center; gap: 16px; white-space: nowrap; padding: 18px 0; font-size: 14px; }
+nav .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -.02em; text-decoration: none; }
+nav .brand img { width: 22px; height: 22px; }
+nav .spacer { flex: 1; }
+nav a:not(.brand) { color: var(--muted); text-decoration: none; }
+nav a:not(.brand):hover { color: var(--fg); }
+button { font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; }
+#theme { width: 32px; height: 32px; flex: none; }
+@media (max-width: 480px) { nav .wide { display: none; } }
+
+h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -.02em; line-height: 1.05; margin: 0; }
+h1 { font-size: clamp(44px, 9vw, 80px); margin-top: 72px; }
+h1 em, h2 em { color: var(--muted); }
+h2 { font-size: clamp(32px, 6vw, 44px); margin-bottom: 16px; }
+h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.lede { font-size: 19px; color: var(--muted); max-width: 640px; margin: 24px 0 32px; }
+.label { font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
+section { padding: 64px 0; border-top: 1px solid var(--line); }
+section p { max-width: 680px; }
+.muted { color: var(--muted); }
+
+.cmd { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 12px 12px 16px; font: 14px var(--mono); max-width: 100%; }
+.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; }
+.cmd button { padding: 4px 10px; font-size: 12px; flex: none; }
+.ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 14px; }
+.ctas a { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); text-decoration: none; }
+.ctas a.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+pre { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; font: 13px/1.6 var(--mono); margin: 16px 0; }
+code { font-family: var(--mono); font-size: .9em; }
+p code, li code { background: var(--surface); padding: 1px 5px; border-radius: 4px; }
+.c { color: var(--muted); } .g { color: var(--ok); } .r { color: var(--bad); }
+
+.costs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 24px; }
+.costs div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.costs code { display: block; color: var(--muted); }
+.costs b { font: 500 32px/1.2 var(--mono); letter-spacing: -.035em; }
+
+ol.pipe { list-style: none; padding: 0; margin: 24px 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; counter-reset: s; }
+ol.pipe li { background: var(--card); padding: 14px 16px 14px 56px; position: relative; counter-increment: s; }
+ol.pipe li::before { content: counter(s, decimal-leading-zero); position: absolute; left: 16px; top: 15px; font: 12px var(--mono); color: var(--muted); }
+ol.pipe p { margin: 0; color: var(--muted); font-size: 14px; }
+
+.grid2 { display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); margin-top: 24px; }
+.grid2 p { color: var(--muted); font-size: 15px; margin: 0; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <a class="brand" href="#"><img src="favicon.svg" alt="">LimitPlane</a>
+  <span class="spacer"></span>
+  <a class="wide" href="#how">How it works</a>
+  <a href="#start">Quickstart</a>
+  <a href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
+  <button id="theme" type="button" aria-label="Toggle theme">◐</button>
+</nav>
+
+<header>
+  <h1>Rate limits priced by <em>what a request costs.</em></h1>
+  <p class="lede">LimitPlane is one Go binary you put in front of any HTTP service. A health check costs 1 unit, an AI call costs 5. Every tenant gets a per-second budget and a monthly cap, shared across replicas through Redis.</p>
+  <div class="cmd"><code id="install">go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest</code><button type="button" data-copy="install">Copy</button></div>
+  <div class="ctas">
+    <a class="primary" href="#start">Get started</a>
+    <a href="https://github.com/iammdzaidalam/limitplane">Read the source</a>
+  </div>
+</header>
+
+<section>
+  <p class="label">The idea</p>
+  <h2>Count cost, <em>not requests.</em></h2>
+  <p>Most limiters treat every request the same, so a client can stay under "100 requests a second" while spending all of your GPU budget. LimitPlane gives each route a price and each tenant a budget in units. Cheap calls stay cheap. Expensive calls drain the bucket faster.</p>
+  <div class="costs">
+    <div><code>GET /healthz</code><b>1</b> <span class="muted">unit</span></div>
+    <div><code>GET /v1/search</code><b>2</b> <span class="muted">units</span></div>
+    <div><code>POST /v1/generate</code><b>5</b> <span class="muted">units</span></div>
+  </div>
+</section>
+
+<section id="how">
+  <p class="label">Request pipeline</p>
+  <h2>Six steps, <em>in this order.</em></h2>
+  <ol class="pipe">
+    <li><h3>Ban check</h3><p>Clients in a cooldown get a 429 before anything else runs.</p></li>
+    <li><h3>Who is it</h3><p>The API key maps to a tenant and tier. No key means the anonymous tier, limited per client IP.</p></li>
+    <li><h3>Cost</h3><p>The longest matching route prefix sets the price. Unlisted routes cost 1.</p></li>
+    <li><h3>Monthly cap</h3><p>The plan's monthly units are checked first. No point rationing the speed of requests the plan can't pay for.</p></li>
+    <li><h3>Burst</h3><p>A GCRA limiter enforces the per-second rate with a burst allowance.</p></li>
+    <li><h3>Headers or 429</h3><p><code>RateLimit-Limit</code>, <code>-Remaining</code> and <code>-Reset</code> on every response. Denials add <code>Retry-After</code> and a JSON body.</p></li>
+  </ol>
+<pre><span class="r">HTTP/1.1 429 Too Many Requests</span>
+RateLimit-Limit: 20
+RateLimit-Remaining: 0
+RateLimit-Reset: 3
+Retry-After: 3
+
+{"error":"rate_limited","reason":"burst","retryAfter":3,"message":"..."}</pre>
+</section>
+
+<section id="start">
+  <p class="label">Quickstart</p>
+  <h2>Run it <em>in front of your app.</em></h2>
+  <p>Point it at an upstream. The dashboard is served at <code>/_limitplane/</code> on the same port.</p>
+<pre><span class="c"># install</span>
+go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest
+
+<span class="c"># proxy mode: meter everything going to :8080</span>
+limitplane --upstream http://localhost:8080
+
+<span class="c"># shared limits across replicas</span>
+limitplane --upstream http://localhost:8080 --redis redis://localhost:6379
+
+<span class="c"># no upstream: a demo app with /v1/ping and /v1/generate</span>
+limitplane</pre>
+  <p>Policy is a JSON file. Edit it on disk or from the dashboard; changes swap in without a restart.</p>
+<pre>{
+  "tiers": {
+    "free": { "rate": { "limit": 10, "period": "1s", "burst": 20 }, "monthly": 50000 },
+    "pro":  { "rate": { "limit": 100, "period": "1s", "burst": 200 } }
+  },
+  "routes": [{ "prefix": "/v1/generate", "cost": 5 }],
+  "keys": { "sk_acme": { "id": "acme", "tier": "pro" } },
+  "anonymous": "free"
+}</pre>
+  <p>Already writing Go? The gateway is plain <code>net/http</code> middleware.</p>
+<pre>gw := gateway.New(gateway.Config{
+    Policy:  policy.NewStore(cfg),
+    Limiter: limiter.NewLocal(),
+    Quota:   limiter.NewLocalQuota(),
+})
+http.ListenAndServe(<span class="g">":8080"</span>, gw.Middleware(mux))</pre>
+</section>
+
+<section>
+  <p class="label">Under the hood</p>
+  <h2>Small state, <em>honest failure.</em></h2>
+  <div class="grid2">
+    <div><h3>GCRA</h3><p>Each key stores one timestamp, the theoretical arrival time. Allowing a request is one compare and one write. No token refill loop, no per-request timers.</p></div>
+    <div><h3>Redis</h3><p>With <code>--redis</code>, the check runs as one Lua script so concurrent replicas can't double-spend. The script is cached by SHA and reloaded if Redis restarts.</p></div>
+    <div><h3>When Redis is down</h3><p>Fails open to a local limiter by default and marks each decision as degraded, so you can see it. <code>--fail-closed</code> returns 503 instead.</p></div>
+    <div><h3>Autopilot</h3><p>Clients that keep hitting the burst limit get a short ban. Each client is labelled from its traffic pattern: human, bot, crawler, retry bug or warming up.</p></div>
+  </div>
+</section>
+
+<section>
+  <p class="label">Performance</p>
+  <h2>Benchmarks</h2>
+  <p>Numbers are in <a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>, with the machine and the command used to produce them. Run <code>go test -bench . ./internal/limiter/</code> to check them on your own hardware.</p>
+</section>
+
+<footer>
+  <span>LimitPlane</span>
+  <a href="https://github.com/iammdzaidalam/limitplane">GitHub</a>
+  <a href="https://github.com/iammdzaidalam/limitplane/blob/main/BENCHMARKS.md">Benchmarks</a>
+</footer>
+</div>
+<script>
+document.getElementById('theme').onclick = () => {
+  const root = document.documentElement
+  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+  root.dataset.theme = dark ? 'light' : 'dark'
+  try { localStorage.setItem('lp-theme', root.dataset.theme) } catch {}
+}
+document.querySelectorAll('[data-copy]').forEach(b => {
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = 'Copied' }
+    catch { b.textContent = 'Select and copy' }
+    setTimeout(() => { b.textContent = 'Copy' }, 1500)
+  }
+})
+</script>
+</body>
+</html>

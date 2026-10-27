@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LimitPlane</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+<script>
+// relative api/ URLs need a trailing slash: /_limitplane -> /_limitplane/
+if (!location.pathname.endsWith('/') && !location.pathname.endsWith('.html')) location.replace(location.pathname + '/' + location.search)
+try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElement.dataset.theme = t } catch {}</script>
+</head>
+<body>
+<header>
+  <div class="brand"><img src="logo.svg" alt="">LimitPlane</div>
+  <span id="backend" class="badge" hidden></span>
+  <span id="live" class="badge" hidden><span class="dot"></span><span>offline</span></span>
+  <span class="spacer"></span>
+  <button id="theme" class="btn icon" type="button" aria-label="Toggle theme">◐</button>
+  <button id="logout" class="btn" type="button" hidden>Sign out</button>
+</header>
+
+<section id="login" class="login" hidden>
+  <form id="loginForm">
+    <h1>Sign in</h1>
+    <p>Use the admin key the gateway was started with.</p>
+    <input type="text" autocomplete="username" value="admin" hidden>
+    <label for="key" class="mono" style="font-size:12px">admin key</label>
+    <input id="key" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Open dashboard</button>
+    <p id="loginMsg" class="msg bad" role="alert"></p>
+  </form>
+</section>
+
+<main id="app" hidden>
+  <div class="kpis" aria-label="Totals">
+    <div class="kpi"><span>Total</span><b id="kTotal">0</b></div>
+    <div class="kpi"><span>Allowed</span><b id="kAllowed" class="ok">0</b></div>
+    <div class="kpi"><span>Blocked</span><b id="kBlocked" class="bad">0</b></div>
+    <div class="kpi"><span>Block rate</span><b id="kRate">0%</b></div>
+  </div>
+
+  <section class="card w8">
+    <h2>Traffic, last 120s <span class="spacer"></span>
+      <span class="legend"><span><i style="background:var(--ok)"></i>allowed</span><span><i style="background:var(--bad)"></i>blocked</span></span>
+    </h2>
+    <canvas id="chart" class="chart" role="img" aria-label="Allowed and blocked requests per second"></canvas>
+  </section>
+
+  <section class="card w4">
+    <h2>Decisions</h2>
+    <ul id="feed" class="feed"></ul>
+    <p id="feedEmpty" class="empty">Waiting for traffic.</p>
+  </section>
+
+  <section id="try" class="card w6" hidden>
+    <h2>Try it</h2>
+    <div class="row">
+      <input id="apiKey" placeholder="API key (optional)" aria-label="API key">
+      <button class="btn" type="button" data-try="ping">GET /v1/ping</button>
+      <button class="btn" type="button" data-try="generate">POST /v1/generate</button>
+      <button class="btn" type="button" data-try="flood">Flood ×30</button>
+    </div>
+    <pre id="tryOut" class="out" aria-live="polite">Fire a request to see the rate limit headers.</pre>
+  </section>
+
+  <section class="card w6">
+    <h2>Tenants</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Tenant</th><th>Tier</th><th class="num">Allowed</th><th class="num">Blocked</th><th>Monthly</th></tr></thead>
+      <tbody id="tenants"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card w6">
+    <h2>Clients</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Client</th><th>Label</th><th class="num">RPS</th><th class="num">Blocked</th><th>Seen</th><th></th></tr></thead>
+      <tbody id="clients"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card w6">
+    <h2>Bans</h2>
+    <form id="banForm" class="row">
+      <input name="client" placeholder="client (ip or tenant)" required aria-label="Client">
+      <input name="minutes" type="number" min="1" value="10" style="flex:0 0 80px" aria-label="Minutes">
+      <input name="reason" placeholder="reason" aria-label="Reason">
+      <button class="btn" type="submit">Ban</button>
+    </form>
+    <p id="banMsg" class="msg bad" role="alert"></p>
+    <div class="scroll"><table>
+      <thead><tr><th>Client</th><th>Until</th><th>Reason</th><th></th></tr></thead>
+      <tbody id="bans"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card w6">
+    <h2>Policy <span class="spacer"></span><button id="policyLoad" class="btn small" type="button">Reload</button><button id="policySave" class="btn small primary" type="button">Save</button></h2>
+    <textarea id="policy" spellcheck="false" aria-label="Policy JSON"></textarea>
+    <p id="policyMsg" class="msg" role="status"></p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
