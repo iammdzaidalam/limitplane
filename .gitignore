@@ -1,0 +1,7 @@
+/limitplane
+/bin/
+*.out
+*.test
+.env
+graphify-out/
+.vercel
