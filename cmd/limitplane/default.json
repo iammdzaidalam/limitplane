@@ -1,0 +1,15 @@
+{
+  "tiers": {
+    "free": {"rate": {"limit": 5, "period": "1s", "burst": 10}, "monthly": 10000},
+    "pro": {"rate": {"limit": 50, "period": "1s", "burst": 100}, "monthly": 1000000}
+  },
+  "routes": [
+    {"prefix": "/v1/ping", "cost": 1},
+    {"prefix": "/v1/generate", "cost": 5}
+  ],
+  "keys": {
+    "demo-free-key": {"id": "acme", "tier": "free"},
+    "demo-pro-key": {"id": "globex", "tier": "pro"}
+  },
+  "anonymous": "free"
+}
