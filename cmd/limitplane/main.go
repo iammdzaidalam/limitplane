@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -102,8 +103,12 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
 		// No WriteTimeout: SSE streams and proxied responses can be long-lived.
 	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return err
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- hs.ListenAndServe() }()
+	go func() { errc <- hs.Serve(ln) }()
 	mode := "demo"
 	if up != nil {
 		mode = "proxy -> " + *upstream + ", admin at " + server.AdminPrefix + "/"
