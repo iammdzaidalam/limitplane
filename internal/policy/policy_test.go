@@ -156,3 +156,20 @@ func waitFor(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("condition not met")
 }
+
+func TestMatchesWholeSegments(t *testing.T) {
+	for _, c := range []struct {
+		path, prefix string
+		want         bool
+	}{
+		{"/v1/embed", "/v1/embed", true},
+		{"/v1/embed/x", "/v1/embed", true},
+		{"/v1/embeddings", "/v1/embed", false},
+		{"/anything", "/", true},
+		{"/v1/embed", "/v1/embed/", false},
+	} {
+		if got := matches(c.path, c.prefix); got != c.want {
+			t.Errorf("matches(%q, %q) = %v", c.path, c.prefix, got)
+		}
+	}
+}

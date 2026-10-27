@@ -61,7 +61,7 @@ func (s *Store) Resolve(apiKey, path string) Match {
 	}
 	m.Cost = 1
 	for _, r := range p.routes {
-		if strings.HasPrefix(path, r.Prefix) {
+		if matches(path, r.Prefix) {
 			m.Cost = r.Cost
 			break
 		}
@@ -106,4 +106,12 @@ func report(f func(error), err error) {
 	if err != nil && f != nil {
 		f(err)
 	}
+}
+
+// matches treats a prefix as whole path segments: /v1/embed matches /v1/embed/x but not /v1/embeddings.
+func matches(path, prefix string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	return len(path) == len(prefix) || prefix[len(prefix)-1] == '/' || path[len(prefix)] == '/'
 }
