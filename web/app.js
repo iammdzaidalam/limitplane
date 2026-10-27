@@ -42,13 +42,16 @@ function toast(text, kind = '') {
 }
 
 // theme
-$('#theme').onclick = () => {
+const isDark = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches }
+function toggleTheme() {
   const root = document.documentElement
-  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
-  root.dataset.theme = dark ? 'light' : 'dark'
+  root.dataset.theme = isDark() ? 'light' : 'dark'
   try { localStorage.setItem('lp-theme', root.dataset.theme) } catch {}
-  draw()
+  draw(); paintGlobe()
 }
+$('#theme').onclick = toggleTheme
+if (!/Mac|iPhone|iPad/.test(navigator.platform)) $$('.mod').forEach(e => { e.textContent = 'Ctrl ' })
+$('#cmdk').title = `Command palette (${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'}K)`
 
 // auth
 $('#loginForm').onsubmit = async e => {
@@ -63,6 +66,11 @@ $('#loginForm').onsubmit = async e => {
   }
 }
 $('#logout').onclick = () => logout()
+$('#keyShow').onclick = () => {
+  const k = $('#key'), on = k.type === 'password'
+  k.type = on ? 'text' : 'password'
+  $('#keyShow').setAttribute('aria-pressed', on)
+}
 
 let timers = [], es
 function logout() {
@@ -79,10 +87,10 @@ function logout() {
 function show(authed) {
   $('#login').hidden = authed
   $('#main').hidden = !authed
-  $('#tabs').hidden = !authed
-  $('#logout').hidden = !authed
+  for (const id of ['tabs', 'logout', 'helpBtn', 'cmdk']) $('#' + id).hidden = !authed
   $('[data-tab=try]').hidden = proxied
-  if (!authed) $('#key').focus()
+  if (!authed) { $('#key').type = 'password'; $('#keyShow').setAttribute('aria-pressed', false); $('#key').focus() }
+  globeRun()
 }
 
 // views
@@ -93,7 +101,7 @@ function route(focus) {
   $$('[data-view]').forEach(e => { e.hidden = e.dataset.view !== v })
   $$('[data-tab]').forEach(a => a.dataset.tab === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'))
   document.title = v[0].toUpperCase() + v.slice(1) + ' · LimitPlane'
-  draw()
+  draw(); globeRun()
   const a = document.activeElement
   if (focus && (a === document.body || a.closest('nav'))) $('#h-' + v).focus({ preventScroll: true })
 }
@@ -111,6 +119,7 @@ function start() {
 
 function tick() {
   advance(); draw(); updateNotice()
+  if (!globe.raf) paintGlobe()
   $('#finding').textContent = finding()
   $$('[data-until]').forEach(e => { e.textContent = left(e.dataset.until) })
   const last = series[series.length - 1]
@@ -131,7 +140,8 @@ function advance(now = Math.floor(Date.now() / 1000)) {
 
 function failed(id, what, reason) {
   if (loaded[id]) return
-  $('#' + id).replaceChildren(h('div', { className: 'state-row bad' }, `Couldn't load ${what} (${reason.message}). `, h('button', { className: 'link', type: 'button', onclick: () => refresh() }, 'Retry')))
+  const row = h('div', { className: 'state-row bad' }, `Couldn't load ${what} (${reason.message}). `, h('button', { className: 'link', type: 'button', onclick: () => refresh() }, 'Retry'))
+  $('#' + id).replaceChildren(id === 'clients' ? h('div', { className: 'tile rows' }, row) : row)
 }
 
 async function refresh(seed) {
@@ -188,7 +198,7 @@ const rateText = tier => {
 const col = (cls, ...kids) => h('span', { className: cls }, ...kids)
 const head = (names, nums = []) => h('div', { className: 'hd' }, ...names.map((n, i) => col(nums.includes(i) ? 'num' : '', n)))
 function list(el, hd, rows, empty) {
-  el.replaceChildren(hd, ...(rows.length ? rows : [h('div', { className: 'state-row' }, empty)]))
+  el.replaceChildren(...(hd ? [hd] : []), ...(rows.length ? rows : [h('div', { className: 'state-row' }, empty)]))
 }
 
 function renderTenants() {
@@ -228,8 +238,9 @@ function renderRoutes() {
 function renderTiers() {
   const cfg = policyCfg
   const rows = Object.entries(cfg.tiers).map(([name, t]) => h('div', { className: 'r' },
-    col('mono', name), col('mono', `${t.rate.limit}/${t.rate.period === '1s' ? 's' : t.rate.period} · burst ${t.rate.burst}`), col('num mono', t.monthly ? fmt(t.monthly) + '/mo' : '—')))
-  list($('#tiers'), head(['Tier', 'Rate', 'Monthly'], [2]), rows, 'No tiers.')
+    col('lbl ell', name),
+    h('div', {}, col('mono', `${t.rate.limit}/${t.rate.period === '1s' ? 's' : t.rate.period} · burst ${t.rate.burst}`), col('sub2', t.monthly ? fmt(t.monthly) + ' per month' : 'No monthly cap'))))
+  list($('#tiers'), null, rows, 'No tiers.')
   const n = Object.keys(cfg.keys).length
   $('#tierNote').textContent = `${n} API ${n === 1 ? 'key' : 'keys'}. Requests without a known key are limited per client IP on the ${cfg.anonymous} tier.`
   $('#keys').replaceChildren(...Object.entries(cfg.keys).map(([k, t]) => h('option', { value: k, label: `${t.id} (${t.tier})` })))
@@ -240,17 +251,24 @@ function ago(ts) {
   return isNaN(s) ? '—' : s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago'
 }
 
+const arrowIcon = () => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  s.setAttribute('viewBox', '0 0 12 12'); s.setAttribute('width', 12); s.setAttribute('height', 12); s.setAttribute('aria-hidden', 'true')
+  s.innerHTML = '<path d="M3.5 8.5l5-5M4.5 3.5h4v4" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  return s
+}
+
 function renderClients() {
-  const rows = clients.map(c => {
+  const cards = clients.map(c => {
     const pct = Math.round((c.blockRatio ?? 0) * 100), rps = (c.rps ?? 0).toFixed(1)
-    return h('div', { className: 'r' },
-      h('button', { className: 'link mono ell', type: 'button', title: 'Show decisions from ' + c.client, onclick: () => viewClient(c.client) }, c.client),
-      col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
-      col('num mono', rps), col('num mono' + (pct >= 50 ? ' badtxt' : ''), pct + '%'), col('mono', ago(c.lastSeen)),
-      banned.has(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban'),
-      col('meta2 mono', `${rps}/s · ${pct}% blocked · ${ago(c.lastSeen)}`))
+    return h('article', { className: 'ccard' },
+      h('div', { className: 'ctop' }, col('cid', c.client),
+        h('button', { className: 'arrow', type: 'button', title: 'Show decisions from ' + c.client, 'aria-label': 'Show decisions from ' + c.client, onclick: () => viewClient(c.client) }, arrowIcon())),
+      h('p', { className: 'sub2' }, `${rps}/s · `, col(pct >= 50 ? 'badtxt' : '', pct + '% blocked'), h('br'), 'seen ' + ago(c.lastSeen)),
+      h('div', { className: 'cfoot' }, col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
+        banned.has(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
   })
-  list($('#clients'), head(['Client', 'Label', 'RPS', 'Blocked', 'Seen', ''], [2, 3]), rows, 'No clients have sent traffic yet.')
+  $('#clients').replaceChildren(...(cards.length ? cards : [h('div', { className: 'tile rows' }, h('div', { className: 'state-row' }, 'No clients have sent traffic yet.'))]))
   $('#clCount').textContent = `${clients.length} ${clients.length === 1 ? 'client' : 'clients'}`
 }
 
@@ -364,6 +382,8 @@ function onDecision(d) {
   const b = series.find(p => p.t === t) || series[series.length - 1]
   if (b) d.allowed ? b.allowed++ : b.blocked++
   if (d.degraded) degradedUntil = Date.now() + 8000
+  globe.pings.push({ at: spot(d.client || '?'), t: performance.now(), color: d.allowed ? '--ok' : d.reason === 'burst' ? '--warn' : '--bad' })
+  if (globe.pings.length > 200) globe.pings.shift()
   ingest(d)
   frame ||= requestAnimationFrame(() => { frame = 0; renderFeed(); renderTotals() })
 }
@@ -584,7 +604,7 @@ function draw() {
     g.strokeStyle = v('--control'); g.beginPath(); g.moveTo(xx, T); g.lineTo(xx, T + ph); g.stroke()
     for (const [key, color] of [['allowed', v('--ok')], ['blocked', v('--bad')]]) {
       g.beginPath(); g.arc(xx, y(p[key]), 3.5, 0, 7)
-      g.fillStyle = color; g.fill(); g.strokeStyle = v('--card'); g.lineWidth = 2; g.stroke()
+      g.fillStyle = color; g.fill(); g.strokeStyle = v('--tile'); g.lineWidth = 2; g.stroke()
     }
     tip.hidden = false
     tip.replaceChildren(h('b', {}, clock(p.t * 1000)),
@@ -711,10 +731,141 @@ function describe(method, url, r, text) {
 }
 $$('[data-try]').forEach(b => { b.onclick = () => fire(b.dataset.try, b) })
 
+// globe: a dotted sphere with a ping per recent decision, placed by a hash of the client id (not geography)
+const still = matchMedia('(prefers-reduced-motion: reduce)')
+const globe = { pings: [], rot: 0, last: 0, raf: 0, seen: false }
+const dots = Array.from({ length: 700 }, (_, i) => {
+  const y = 1 - 2 * (i + .5) / 700, r = Math.sqrt(1 - y * y), t = i * 2.39996
+  return [Math.cos(t) * r, y, Math.sin(t) * r]
+})
+const hash = s => { let x = 2166136261; for (const c of s) x = Math.imul(x ^ c.codePointAt(0), 16777619); return (x >>> 0) / 4294967296 }
+function spot(id) {
+  const lat = Math.asin(2 * hash(id + '#') - 1), lon = hash(id) * 2 * Math.PI
+  return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)]
+}
+
+function paintGlobe(now = performance.now()) {
+  const c = $('#globe'), w = c.clientWidth, ht = c.clientHeight
+  if (!w) return
+  const dpr = devicePixelRatio || 1, bw = Math.round(w * dpr), bh = Math.round(ht * dpr)
+  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh }
+  const g = c.getContext('2d'), v = css()
+  g.setTransform(dpr, 0, 0, dpr, 0, 0)
+  g.clearRect(0, 0, w, ht)
+  if (globe.raf) globe.rot += (now - (globe.last || now)) * 1.2e-4
+  globe.last = now
+  const R = Math.min(w, ht) / 2 - 10, cx = w / 2, cy = ht / 2
+  const sa = Math.sin(globe.rot), ca = Math.cos(globe.rot), st = Math.sin(.35), ct = Math.cos(.35)
+  const proj = ([x, y, z]) => { const x1 = x * ca + z * sa, z1 = z * ca - x * sa; return [cx + x1 * R, cy - (y * ct - z1 * st) * R, y * st + z1 * ct] }
+  g.fillStyle = v('--muted')
+  for (const d of dots) {
+    const [px, py, pz] = proj(d)
+    if (pz > 0) { g.globalAlpha = .12 + .5 * pz; g.fillRect(px - .7, py - .7, 1.4, 1.4) }
+  }
+  globe.pings = globe.pings.filter(p => now - p.t < 4000)
+  for (const p of globe.pings) {
+    const [px, py, pz] = proj(p.at), age = (now - p.t) / 4000
+    if (pz <= 0) continue
+    g.globalAlpha = 1 - age; g.fillStyle = g.strokeStyle = v(p.color); g.lineWidth = 1
+    g.beginPath(); g.arc(px, py, 2.2, 0, 7); g.fill()
+    if (!still.matches) { g.beginPath(); g.arc(px, py, 2.2 + age * 12, 0, 7); g.stroke() }
+  }
+  g.globalAlpha = 1
+}
+// animate only while signed in, on screen and in a visible tab
+function globeRun() {
+  if (!token || !globe.seen || document.hidden || still.matches) { cancelAnimationFrame(globe.raf); globe.raf = 0; globe.last = 0; return }
+  globe.raf ||= requestAnimationFrame(function loop(t) { paintGlobe(t); globe.raf = requestAnimationFrame(loop) })
+}
+new IntersectionObserver(([e]) => { globe.seen = e.isIntersecting; globeRun() }).observe($('#globe'))
+new ResizeObserver(() => paintGlobe()).observe($('#globe'))
+document.addEventListener('visibilitychange', globeRun)
+
+// command palette: a combobox over a listbox; the input keeps focus, arrows move the active option
+const pal = $('#palette'), palQ = $('#palQ'), palList = $('#palList')
+let palItems = [], palAt = 0, palFrom = null
+
+function commands(raw) {
+  const q = raw.toLowerCase(), go = (v, label, key) => ({ group: 'Go to', label, key, run: () => { location.hash = '#/' + v } })
+  const all = [
+    go('overview', 'Overview', '1'), go('clients', 'Clients and bans', '2'), go('policy', 'Open policy editor', '3'),
+    ...(proxied ? [] : [go('try', 'Try it', '4')]),
+    { group: 'Feed', label: paused ? 'Resume the decision feed' : 'Pause the decision feed', key: 'p', run: () => setPaused(!paused) },
+    { group: 'Feed', label: 'Filter decisions', key: '/', run: () => { location.hash = '#/overview'; route(); $('#q').focus() } },
+    { group: 'Clients', label: 'Ban a client…', hint: 'type it', keep: true, run: () => { palQ.value = 'ban '; palRender() } },
+    { group: 'General', label: `Switch to ${isDark() ? 'light' : 'dark'} theme`, run: toggleTheme },
+    { group: 'General', label: 'Keyboard shortcuts', key: '?', run: () => $('#help').showModal() },
+    { group: 'General', label: 'Sign out', run: logout },
+  ]
+  const target = raw.replace(/^ban\s+/i, '').trim()
+  const banOnly = /^ban\s+\S/i.test(raw)
+  const found = banOnly ? [] : all.filter(c => !q || c.label.toLowerCase().includes(q))
+  if (!target || /\s/.test(target) || (!banOnly && found.length && target.length < 3)) return found
+  const t = target.toLowerCase(), banItem = (id, hint) => ({ group: 'Ban for 10 minutes', label: 'Ban ' + id, hint, run: () => ban(id, 10, 'manual (palette)') })
+  const known = clients.filter(c => !banned.has(c.client) && c.client.toLowerCase().includes(t)).slice(0, 5)
+  const bans = known.map(c => banItem(c.client, c.label || 'client'))
+  if (!known.some(c => c.client.toLowerCase() === t) && !banned.has(target)) bans.push(banItem(target, 'as typed'))
+  return [...found, ...bans]
+}
+
+function palRender() {
+  palItems = commands(palQ.value)
+  palAt = Math.min(palAt, Math.max(0, palItems.length - 1))
+  let g = ''
+  palList.replaceChildren(...palItems.flatMap((c, i) => {
+    const li = h('li', { id: 'pc' + i, role: 'option', className: 'pitem', onclick: () => palRun(i), onpointermove: () => palMove(i) },
+      h('span', {}, c.label), c.hint ? h('small', {}, c.hint) : null, c.key ? h('kbd', {}, c.key) : null)
+    const out = c.group === g ? [li] : [h('li', { role: 'presentation', className: 'pgroup' }, c.group), li]
+    g = c.group
+    return out
+  }))
+  if (!palItems.length) palList.append(h('li', { role: 'presentation', className: 'pempty' }, 'No matching command.'))
+  palMove(palAt)
+}
+
+function palMove(i) {
+  if (!palItems.length) return palQ.removeAttribute('aria-activedescendant')
+  palAt = (i + palItems.length) % palItems.length
+  $$('.pitem').forEach((el, j) => el.setAttribute('aria-selected', j === palAt))
+  palQ.setAttribute('aria-activedescendant', 'pc' + palAt)
+  $('#pc' + palAt).scrollIntoView({ block: 'nearest' })
+}
+
+function palRun(i) {
+  const c = palItems[i]
+  if (!c) return
+  // restore focus before running, so the command can move it (close's own event fires later)
+  if (!c.keep) { pal.close(); palFrom?.focus(); palFrom = null }
+  c.run()
+}
+
+function openPalette() {
+  if (pal.open) return pal.close()
+  if ($('#help').open) $('#help').close()
+  palFrom = document.activeElement
+  palQ.value = ''; palAt = 0
+  palRender()
+  pal.showModal()
+  palQ.focus()
+}
+palQ.oninput = () => { palAt = 0; palRender() }
+palQ.onkeydown = e => {
+  const k = e.key
+  if (k === 'ArrowDown' || k === 'ArrowUp') palMove(palAt + (k === 'ArrowDown' ? 1 : -1))
+  else if (k === 'Home' || k === 'End') palMove(k === 'Home' ? 0 : palItems.length - 1)
+  else if (k === 'Enter') palRun(palAt)
+  else if (k !== 'Tab') return // the input is the only stop, so Tab stays put
+  e.preventDefault()
+}
+pal.onclick = e => { if (e.target === pal) pal.close() }
+pal.onclose = () => { if (palFrom?.isConnected) palFrom.focus(); palFrom = null }
+$('#cmdk').onclick = openPalette
+
 // keyboard
 $('#helpBtn').onclick = () => $('#help').showModal()
 addEventListener('keydown', e => {
-  if (!token || $('#help').open) return
+  if (token && (e.metaKey || e.ctrlKey) && e.key?.toLowerCase() === 'k') { e.preventDefault(); return openPalette() }
+  if (!token || $('#help').open || pal.open) return
   if (e.key === 'Escape' && !$('#drawer').hidden) return closeDrawer()
   if (e.metaKey || e.ctrlKey || e.altKey) return
   if (e.target.matches?.('input, textarea, select, [contenteditable]')) {

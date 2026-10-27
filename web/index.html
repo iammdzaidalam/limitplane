@@ -7,7 +7,7 @@
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="app.css">
 <script>
 // relative api/ URLs need a trailing slash: /_limitplane -> /_limitplane/
@@ -16,7 +16,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="bar">
+<header class="nav">
   <a class="brand" href="#/overview"><img src="logo.svg" alt="" width="22" height="22">LimitPlane</a>
   <nav id="tabs" class="tabs" aria-label="Views" hidden>
     <a href="#/overview" data-tab="overview">Overview</a>
@@ -24,12 +24,16 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <a href="#/policy" data-tab="policy">Policy</a>
     <a href="#/try" data-tab="try">Try it</a>
   </nav>
-  <span class="spacer"></span>
-  <button id="helpBtn" class="btn icon" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
-  <button id="theme" class="btn icon" type="button" aria-label="Toggle theme" title="Toggle theme">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" /><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
-  </button>
-  <button id="logout" class="btn" type="button" hidden>Sign out</button>
+  <div class="tools">
+    <button id="helpBtn" class="ibtn" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" hidden>?</button>
+    <button id="theme" class="ibtn" type="button" aria-label="Toggle theme" title="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
+    </button>
+    <button id="cmdk" class="ibtn" type="button" aria-label="Command palette" aria-haspopup="dialog" title="Command palette" hidden>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M6 6V4.5A1.5 1.5 0 1 0 4.5 6H6zm0 0h4M6 6v4m4-4V4.5A1.5 1.5 0 1 1 11.5 6H10zm0 0v4m0 0h1.5a1.5 1.5 0 1 1-1.5 1.5V10zm0 0H6m0 0v1.5A1.5 1.5 0 1 1 4.5 10H6z"/></svg>
+    </button>
+    <button id="logout" class="btn ghost small" type="button" hidden>Sign out</button>
+  </div>
 </header>
 
 <main id="main" tabindex="-1" hidden>
@@ -46,28 +50,34 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 
     <section data-view="overview" aria-labelledby="h-overview">
       <div class="title">
-        <div>
-          <h1 id="h-overview" tabindex="-1">Traffic</h1>
-          <p id="finding" class="sub" aria-live="polite">Waiting for the first requests.</p>
-        </div>
+        <h1 id="h-overview" tabindex="-1">Traffic</h1>
+        <p id="finding" class="sub" aria-live="polite">Waiting for the first requests.</p>
       </div>
 
-      <div class="kpis" role="group" aria-label="Totals since start">
+      <div class="grid">
+      <div class="kpis c8" role="group" aria-label="Totals since start">
         <div class="kpi"><span>Requests</span><b id="kTotal">0</b></div>
         <div class="kpi"><span>Allowed</span><b id="kAllowed">0</b></div>
         <div class="kpi"><span>Blocked</span><b id="kBlocked">0</b></div>
         <div class="kpi"><span>Block rate</span><b id="kRate">0.0<small>%</small></b></div>
-        <div class="kpi"><span>Last 5s average</span><b id="kNow">0.0<small>/s</small></b></div>
+        <div class="kpi"><span>Last 5s avg</span><b id="kNow">0.0<small>/s</small></b></div>
         <div class="kpi"><span>Bans active</span><b id="kBans">0</b></div>
+      </div>
+      <section class="card c4 globecard" aria-labelledby="h-globe">
+        <div class="ch"><h2 id="h-globe">Live decisions</h2><span class="spacer"></span><span class="micro">placed by hash</span></div>
+        <div class="tile globetile">
+          <canvas id="globe" role="img" aria-label="Dotted globe with a ping for each decision in the last few seconds. Clients are placed by a hash of their id, not by location."></canvas>
+        </div>
+      </section>
       </div>
 
       <div class="grid">
         <section class="card c7 chartcard" aria-labelledby="h-chart">
-          <h2 id="h-chart">Requests per second <span class="spacer"></span>
+          <div class="ch"><h2 id="h-chart">Requests per second</h2><span class="spacer"></span>
             <span class="legend"><span><i class="sw ok"></i>allowed</span><span><i class="sw bad"></i>blocked</span></span>
-          </h2>
+          </div>
           <p id="peak" class="meta">Last 120 seconds</p>
-          <div class="plot">
+          <div class="tile plot">
             <canvas id="chart" class="chart" tabindex="0" role="img" aria-label="Allowed and blocked requests per second, last 120 seconds. Use the arrow keys to read each second."></canvas>
             <div id="tip" class="tip" hidden></div>
           </div>
@@ -75,9 +85,9 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         </section>
 
         <section class="card c5 feedcard" aria-labelledby="h-feed">
-          <h2 id="h-feed">Decisions <span class="spacer"></span>
+          <div class="ch"><h2 id="h-feed">Decisions</h2><span class="spacer"></span>
             <button id="pause" class="btn small" type="button" aria-pressed="false">Pause <kbd>p</kbd></button>
-          </h2>
+          </div>
           <div class="filters">
             <div id="chips" class="chips" role="group" aria-label="Filter decisions"></div>
             <div class="search">
@@ -87,24 +97,26 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
             </div>
           </div>
           <p id="feedBar" class="feedbar" hidden></p>
-          <ul id="feed" class="feed"></ul>
-          <p id="feedEmpty" class="empty">Waiting for traffic.</p>
+          <div class="tile feedtile">
+            <ul id="feed" class="feed"></ul>
+            <p id="feedEmpty" class="empty">Waiting for traffic.</p>
+          </div>
         </section>
       </div>
 
       <div class="grid">
         <section class="card c7" aria-labelledby="h-usage">
-          <h2 id="h-usage">Monthly plans <span class="spacer"></span><span id="resets" class="meta"></span></h2>
+          <div class="ch"><h2 id="h-usage">Monthly plans</h2><span class="spacer"></span><span id="resets" class="micro"></span></div>
           <p class="meta">Each bar is the month's spend against the tier's plan; the tick marks the 80% alert line.</p>
-          <div class="rows tenants" id="tenants">
+          <div class="tile rows tenants" id="tenants">
             <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
           </div>
         </section>
 
         <section class="card c5" aria-labelledby="h-routes">
-          <h2 id="h-routes">Routes and costs</h2>
+          <div class="ch"><h2 id="h-routes">Routes and costs</h2></div>
           <p id="routesNote" class="meta">Longest prefix wins; any other path costs 1.</p>
-          <div class="rows routes" id="routes">
+          <div class="tile rows routes" id="routes">
             <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div>
           </div>
         </section>
@@ -112,91 +124,101 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     </section>
 
     <section data-view="clients" aria-labelledby="h-clients" hidden>
-      <div class="title"><div>
+      <div class="title">
         <h1 id="h-clients" tabindex="-1">Clients</h1>
         <p class="sub">Who is sending traffic right now, and who is cooling down.</p>
-      </div></div>
+      </div>
       <div class="grid top">
         <section class="card c7" aria-labelledby="h-cl">
-          <h2 id="h-cl">Active clients <span class="spacer"></span><span id="clCount" class="meta"></span></h2>
-          <div class="rows clients" id="clients"><div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></div>
+          <div class="ch"><h2 id="h-cl">Active clients</h2><span class="spacer"></span><span id="clCount" class="micro"></span></div>
+          <div class="cgrid" id="clients"><div class="tile rows"><div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
         </section>
         <section class="card c5" aria-labelledby="h-bans">
-          <h2 id="h-bans">Bans</h2>
+          <div class="ch"><h2 id="h-bans">Bans</h2></div>
           <form id="banForm" class="banform" novalidate>
             <label>Client<input name="client" required placeholder="ip or tenant" autocomplete="off" spellcheck="false"></label>
             <label>Minutes<input name="minutes" type="number" min="1" max="10080" value="10" inputmode="numeric"></label>
             <label class="wide">Reason<input name="reason" placeholder="manual" autocomplete="off"></label>
-            <button class="btn primary" type="submit">Ban</button>
+            <button class="btn primary" type="submit">Ban client</button>
           </form>
           <p id="banMsg" class="msg bad" role="alert"></p>
-          <div class="rows bans" id="bans"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <div class="tile rows bans" id="bans"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
         </section>
       </div>
     </section>
 
     <section data-view="policy" aria-labelledby="h-policy" hidden>
-      <div class="title"><div>
+      <div class="title">
         <h1 id="h-policy" tabindex="-1">Policy</h1>
         <p class="sub">Edits swap in atomically; requests already in flight finish under the old policy.</p>
-      </div></div>
+      </div>
       <div class="grid top">
         <section class="card c8" aria-labelledby="h-editor">
-          <h2 id="h-editor">Policy JSON <span id="dirty" class="state"></span><span class="spacer"></span>
+          <div class="ch"><h2 id="h-editor">Policy JSON</h2><span id="dirty" class="state"></span><span class="spacer"></span>
             <button id="policyFormat" class="btn small" type="button">Format</button>
             <button id="policyLoad" class="btn small" type="button">Revert</button>
-            <button id="policySave" class="btn small primary" type="button">Save <kbd>⌘S</kbd></button>
-          </h2>
+            <button id="policySave" class="btn small primary" type="button">Save <kbd><span class="mod">⌘</span>S</kbd></button>
+          </div>
           <label for="policy" class="sr">Policy JSON</label>
-          <textarea id="policy" spellcheck="false" aria-describedby="policyMsg" disabled></textarea>
+          <textarea id="policy" class="tile" spellcheck="false" aria-describedby="policyMsg" disabled></textarea>
           <p id="policyMsg" class="msg" role="alert"></p>
         </section>
         <section class="card c4" aria-labelledby="h-tiers">
-          <h2 id="h-tiers">Tiers</h2>
-          <div class="rows tiers" id="tiers"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <div class="ch"><h2 id="h-tiers">Tiers</h2></div>
+          <div class="tile rows tiers cv" id="tiers"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
           <p id="tierNote" class="meta"></p>
         </section>
       </div>
     </section>
 
     <section data-view="try" aria-labelledby="h-try" hidden>
-      <div class="title"><div>
+      <div class="title">
         <h1 id="h-try" tabindex="-1">Try it</h1>
         <p class="sub">Fire requests at the demo routes to watch limits trip.</p>
-      </div></div>
+      </div>
       <section class="card" aria-labelledby="h-fire">
-        <h2 id="h-fire">Send a request</h2>
+        <div class="ch"><h2 id="h-fire">Send a request</h2></div>
         <div class="row">
           <label class="grow">API key<input id="apiKey" list="keys" placeholder="optional, anonymous without one" autocomplete="off" spellcheck="false"></label>
           <datalist id="keys"></datalist>
-          <button class="btn" type="button" data-try="ping">GET /v1/ping</button>
+          <button class="btn primary" type="button" data-try="ping">GET /v1/ping</button>
           <button class="btn" type="button" data-try="generate">POST /v1/generate</button>
           <button class="btn" type="button" data-try="flood">Flood ×30</button>
         </div>
-        <pre id="tryOut" class="out" aria-live="polite">Fire a request to see the rate limit headers.</pre>
+        <pre id="tryOut" class="tile out" aria-live="polite">Fire a request to see the rate limit headers.</pre>
       </section>
     </section>
   </div>
-  <p class="hint">Press <kbd>?</kbd> for keyboard shortcuts</p>
+  <p class="hint"><kbd>?</kbd> shortcuts <span aria-hidden="true">·</span> <kbd><span class="mod">⌘</span>K</kbd> commands</p>
 </main>
 
 <section id="login" class="login" hidden>
-  <form id="loginForm">
-    <h1>Sign in</h1>
-    <p>Use the admin key the gateway was started with.</p>
+  <form id="loginForm" class="card lcard">
+    <div class="tile lhead">
+      <img src="logo.svg" alt="" width="28" height="28">
+      <h1>Sign in</h1>
+      <p>Use the admin key the gateway was started with.</p>
+    </div>
     <input type="text" autocomplete="username" value="admin" hidden>
-    <label for="key">Admin key</label>
-    <input id="key" type="password" autocomplete="current-password" required aria-describedby="loginMsg">
-    <button class="btn primary" type="submit">Open dashboard</button>
+    <label for="key" class="micro">Admin key</label>
+    <div class="cmd">
+      <div class="cpill">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.6 8.4 13.5 2.5M11 5l2 2"/></svg>
+        <input id="key" type="password" autocomplete="current-password" required aria-describedby="loginMsg" spellcheck="false">
+        <button id="keyShow" class="ibtn" type="button" aria-label="Show key" aria-pressed="false">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+        </button>
+      </div>
+      <button class="btn primary" type="submit">Open dashboard</button>
+    </div>
     <p id="loginMsg" class="msg bad" role="alert"></p>
   </form>
 </section>
 
-
 <aside id="drawer" class="drawer" role="dialog" aria-modal="false" aria-labelledby="dTitle" hidden>
   <div class="dhead">
     <div class="dtitle"><span id="dPill" class="pill"></span><h2 id="dTitle"></h2></div>
-    <button id="dClose" class="btn icon" type="button" aria-label="Close inspector"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
+    <button id="dClose" class="ibtn" type="button" aria-label="Close inspector"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
   </div>
   <p id="dWhy" class="why"></p>
   <div class="dact">
@@ -204,21 +226,32 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <button id="dFilter" class="btn" type="button">Only this client</button>
     <button id="dCopy" class="btn" type="button">Copy JSON</button>
   </div>
-  <dl id="dList" class="kv"></dl>
+  <dl id="dList" class="tile kv cv"></dl>
 </aside>
 <div id="scrim" class="scrim" hidden></div>
 
-<dialog id="help" class="help" aria-labelledby="helpTitle">
+<dialog id="help" class="dlg help" aria-labelledby="helpTitle">
   <h2 id="helpTitle">Keyboard shortcuts</h2>
-  <dl class="kv keys">
+  <dl class="tile kv cv keys">
+    <div><dt><kbd><span class="mod">⌘</span>K</kbd></dt><dd>Open the command palette</dd></div>
     <div><dt><kbd>/</kbd></dt><dd>Filter the decision feed</dd></div>
     <div><dt><kbd>p</kbd></dt><dd>Pause or resume the feed</dd></div>
     <div><dt><kbd>1</kbd> – <kbd>4</kbd></dt><dd>Overview, Clients, Policy, Try it</dd></div>
-    <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector or this list</dd></div>
+    <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector or a dialog</dd></div>
     <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Read the chart second by second</dd></div>
-    <div><dt><kbd>⌘</kbd> <kbd>S</kbd></dt><dd>Save the policy while editing</dd></div>
+    <div><dt><kbd><span class="mod">⌘</span>S</kbd></dt><dd>Save the policy while editing</dd></div>
   </dl>
-  <form method="dialog"><button class="btn" autofocus>Close</button></form>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
+<dialog id="palette" class="dlg palette" aria-label="Command palette">
+  <div class="psearch">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+    <input id="palQ" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Type a command, or a client to ban" placeholder="Type a command, or a client to ban" autocomplete="off" spellcheck="false">
+    <kbd>esc</kbd>
+  </div>
+  <ul id="palList" class="plist" role="listbox" aria-label="Commands"></ul>
+  <p class="pfoot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></p>
 </dialog>
 
 <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
