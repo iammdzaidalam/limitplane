@@ -200,14 +200,13 @@ function emit(id, r, path, at) {
   document.fonts?.ready.then(lead)
 }
 
-// top bar: active section in blue; bottom bar appears once the hero is passed
+// top bar: active section in blue
 {
-  const links = $$('.links a'), bar = $('#bbar'), hero = $('.hero')
+  const links = $$('.links a')
   const spy = new IntersectionObserver(es => es.forEach(e => {
     if (e.isIntersecting) links.forEach(a => a.setAttribute('aria-current', a.hash === '#' + e.target.id))
   }), { rootMargin: '-45% 0px -50% 0px' })
   $$('main > .sec[id]').forEach(s => spy.observe(s))
-  new IntersectionObserver(es => bar.classList.toggle('on', !es[0].isIntersecting)).observe(hero.querySelector('.row'))
 }
 
 // hero: simulated traffic against the free tier
@@ -243,7 +242,7 @@ function emit(id, r, path, at) {
   const STAGES = ['ban', 'who', 'cost', 'burst', 'monthly', 'respond']
   const msg = (r, tier) => ({
     burst: `Too many requests for the ${tier} tier (this route costs ${r.cost} units). Retry in ${r.retry}s.`,
-    monthly: `The ${tier} plan's monthly quota of ${r.limit} units is used up. It resets on the 1st (UTC).`,
+    monthly: `The ${tier} tier's monthly quota of ${r.limit} units is used up. It resets on the 1st (UTC).`,
     banned: `This client is temporarily blocked for abusive traffic. Retry in ${r.retry}s.`,
   })[r.reason]
 
@@ -314,7 +313,6 @@ function emit(id, r, path, at) {
   }
   $o('reset').onclick = () => reset()
   $$('[name=tier]').forEach(r => r.onchange = () => reset(r.value))
-  $$('[data-tier]').forEach(a => a.addEventListener('click', () => { const r = $o('tier-' + a.dataset.tier); r.checked = true; r.onchange() }))
   reset('free', 'Example response shown. Send a request to see yours.')
   setInterval(paint, 100)
 }
@@ -324,8 +322,8 @@ function emit(id, r, path, at) {
   const tiles = $$('#pipe .stage'), btns = $$('.scen button'), outcome = $('#outcome')
   const TEXT = {
     '-1': 'Every check passed. The request goes upstream with RateLimit-Limit, -Remaining and -Reset on the response.',
-    3: '429 with reason burst and a Retry-After. The burst bucket was empty, and the monthly plan is not charged.',
-    4: '429 with reason monthly. The plan is used up, and Retry-After runs to the 1st of next month (UTC).',
+    3: '429 with reason burst and a Retry-After. The burst bucket was empty, and the monthly quota is not touched.',
+    4: '429 with reason monthly. The monthly quota is used up, and Retry-After runs to the 1st of next month (UTC).',
     0: '429 with reason banned. Autopilot banned this client after repeated burst blocks, so nothing else runs.',
   }
   let seq = 0
@@ -386,7 +384,7 @@ $('#theme').onclick = toggleTheme
 {
   const dlg = $('#pal'), q = $('#pal-q'), list = $('#pal-list')
   const jump = id => () => document.getElementById(id).scrollIntoView({ behavior: reduce.matches ? 'auto' : 'smooth' })
-  const ITEMS = [['Live decisions', 'live'], ['Playground', 'play'], ['Pipeline', 'how'], ['Quickstart', 'start'], ['Policy file', 'policy'], ['Plans', 'plans'], ['Under the hood', 'under'], ['Benchmarks', 'bench']]
+  const ITEMS = [['Live decisions', 'live'], ['Playground', 'play'], ['Pipeline', 'how'], ['Quickstart', 'start'], ['Policy file', 'policy'], ['Under the hood', 'under'], ['Benchmarks', 'bench']]
     .map(([t, id]) => ({ g: 'Sections', t, hint: '#' + id, run: jump(id) }))
     .concat([
       { g: 'Actions', t: 'Toggle theme', hint: '', run: toggleTheme },

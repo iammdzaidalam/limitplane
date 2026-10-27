@@ -155,7 +155,7 @@ async function refresh(seed) {
     if (seed === true) { series = (v.series || []).map(p => ({ ...p })); advance(); draw() }
     tenants = v.tenants || []; loaded.tenants = true
     renderTenants(); updateNotice()
-  } else failed('tenants', 'monthly plans', s.reason)
+  } else failed('tenants', 'monthly quotas', s.reason)
   if (c.status === 'fulfilled') { clients = c.value || []; loaded.clients = true } else failed('clients', 'clients', c.reason)
   if (b.status === 'fulfilled') { bans = b.value || []; banned = new Set(bans.map(x => x.client)); loaded.bans = true } else failed('bans', 'bans', b.reason)
   if (loaded.clients) renderClients()
@@ -211,14 +211,14 @@ function renderTenants() {
       ? col('sub2', 'No monthly cap')
       : h('div', {},
         h('div', { className: 'plan-l' }, h('span', {}, h('b', {}, fmt(t.monthlyUsed)), ' of ' + fmt(t.monthlyLimit)),
-          state ? h('span', { className: 'pill ' + state, title: `Alert line is ${PLAN_ALERT}% of the monthly plan` }, state === 'bad' ? 'plan used up' : `${label}% used`) : h('span', {}, label + '%')),
-        h('div', { className: 'plan ' + state, role: 'progressbar', 'aria-label': t.tenant + ' monthly plan', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(Math.min(100, p)) }, h('i', { style: `width:${Math.min(100, p)}%` })))
+          state ? h('span', { className: 'pill ' + state, title: `Alert line is ${PLAN_ALERT}% of the monthly quota` }, state === 'bad' ? 'quota used up' : `${label}% used`) : h('span', {}, label + '%')),
+        h('div', { className: 'plan ' + state, role: 'progressbar', 'aria-label': t.tenant + ' monthly quota', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(Math.min(100, p)) }, h('i', { style: `width:${Math.min(100, p)}%` })))
     return h('div', { className: 'r' },
       h('div', {}, col('mono', t.tenant), col('sub2', [t.tier, rateText(t.tier)].filter(Boolean).join(' · '))),
       plan, col('num mono', fmt(t.allowed)), col('num mono', fmt(t.blocked)),
       col('meta2 mono', `${fmt(t.allowed)} allowed · ${fmt(t.blocked)} blocked`))
   })
-  list($('#tenants'), head(['Tenant', 'Monthly plan', 'Allowed', 'Blocked'], [2, 3]), rows, 'No tenants yet.')
+  list($('#tenants'), head(['Tenant', 'Monthly quota', 'Allowed', 'Blocked'], [2, 3]), rows, 'No tenants yet.')
   const now = new Date()
   $('#resets').textContent = 'Resets in ' + Math.ceil((Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) - now) / 864e5) + ' d (UTC)'
 }
@@ -481,7 +481,7 @@ function finding() {
   const recent = buf.filter(d => d._ms > cut), blocked = recent.filter(d => !d.allowed)
   const top = key => { const c = {}; blocked.forEach(d => { c[d[key]] = (c[d[key]] || 0) + 1 }); return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] }
   const alert = tenants.filter(t => t.monthlyLimit && 100 * t.monthlyUsed / t.monthlyLimit >= PLAN_ALERT)
-  const plan = alert.length ? ` ${alert.map(t => t.tenant).join(', ')} ${alert.length === 1 ? 'is' : 'are'} past ${PLAN_ALERT}% of the monthly plan.` : ''
+  const plan = alert.length ? ` ${alert.map(t => t.tenant).join(', ')} ${alert.length === 1 ? 'is' : 'are'} past ${PLAN_ALERT}% of the monthly quota.` : ''
   if (!recent.length) return 'No requests in the last minute.' + plan
   if (!blocked.length) return `${fmt(recent.length)} requests in the last minute, none blocked.` + plan
   return `${fmt(blocked.length)} of ${fmt(recent.length)} requests blocked in the last minute, mostly ${top('reason')} from ${top('client')}.` + plan
@@ -496,7 +496,7 @@ const dur = ns => {
 const why = d => ({
   ok: 'Within limits. The request was passed through.',
   burst: `The client used up its ${d.tier} burst allowance. Wait ${dur(d.retryAfter)} for tokens to refill.`,
-  monthly: `${d.tenant} has used its monthly plan on the ${d.tier} tier. It resets on the 1st (UTC).`,
+  monthly: `${d.tenant} has used its monthly quota on the ${d.tier} tier. It resets on the 1st (UTC).`,
   banned: `${d.client} is on the ban list${d.retryAfter ? ', which lifts in ' + dur(d.retryAfter) : ''}.`,
   error: 'The shared backend failed and the gateway is set to fail closed.',
 }[d.reason] || '')

@@ -1,7 +1,7 @@
 # LimitPlane
 
 A rate limiter you put in front of any site or API. It prices requests by cost
-(a health check is 1 unit, an AI call is 5), enforces a burst budget and a monthly plan per
+(a health check is 1 unit, an AI call is 5), enforces a burst budget and a monthly quota per
 tenant, shares limits across replicas through Redis, bans abusive clients automatically,
 and shows every decision on a live dashboard. Go, standard library only.
 
@@ -24,7 +24,7 @@ unless you pass `--admin-key`.
 ban? -> who (API key -> tenant, tier) -> cost (longest route prefix) -> burst -> monthly -> headers
 ```
 
-Burst runs before monthly, so a request the burst limit rejects never uses up the plan.
+Burst runs before monthly, so a request the burst limit rejects never counts against the quota.
 Every response carries `RateLimit-Limit/Remaining/Reset`. A block returns `429` with `Retry-After`
 and a JSON body that says why.
 
@@ -34,7 +34,7 @@ and a JSON body that says why.
 - **Redis:** the same algorithm in one Lua script that reads Redis `TIME`, so replica clock skew can't leak extra burst.
 - **Metrics:** `/metrics` is public unless you set `--metrics-key` (or `LIMITPLANE_METRICS_KEY`); scrapers then send `Authorization: Bearer <key>`. It lists tenant ids, so set it in proxy mode.
 - **Redis down:** a circuit breaker routes to the local limiter and marks decisions `degraded`. `--fail-closed` returns 503 instead.
-- **Autopilot:** bans a client after repeated burst blocks, alerts at 80% of a monthly plan, and labels clients (human, bot, crawler, retry bug) from request timing. The labels are a heuristic, not a model.
+- **Autopilot:** bans a client after repeated burst blocks, alerts at 80% of a monthly quota, and labels clients (human, bot, crawler, retry bug) from request timing. The labels are a heuristic, not a model.
 - **Hot reload:** the policy is validated, then swapped atomically (file change or `SIGHUP`).
 - `X-Forwarded-For` is trusted only with `--trust-proxy`, and then only the right-most untrusted hop.
 
