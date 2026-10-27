@@ -1,0 +1,18 @@
+{
+  "tiers": {
+    "free":       { "rate": { "limit": 5,   "period": "1s", "burst": 10 },  "monthly": 10000 },
+    "pro":        { "rate": { "limit": 50,  "period": "1s", "burst": 100 }, "monthly": 1000000 },
+    "enterprise": { "rate": { "limit": 500, "period": "1s", "burst": 1000 } }
+  },
+  "routes": [
+    { "prefix": "/healthz",     "cost": 1 },
+    { "prefix": "/v1/generate", "cost": 5 },
+    { "prefix": "/v1/embed",    "cost": 2 }
+  ],
+  "keys": {
+    "demo-free-key":       { "id": "acme",    "tier": "free" },
+    "demo-pro-key":        { "id": "globex",  "tier": "pro" },
+    "demo-enterprise-key": { "id": "initech", "tier": "enterprise" }
+  },
+  "anonymous": "free"
+}
