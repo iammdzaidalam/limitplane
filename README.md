@@ -1,5 +1,7 @@
 # LimitPlane
 
+[![ci](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml/badge.svg)](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml)
+
 A rate limiter you put in front of any site or API. It prices requests by cost
 (a health check is 1 unit, an AI call is 5), enforces a burst budget and a monthly quota per
 tenant, shares limits across replicas through Redis, bans abusive clients automatically,
@@ -43,6 +45,15 @@ and a JSON body that says why.
 
 Numbers are in [BENCHMARKS.md](BENCHMARKS.md).
 
+```
+            packets                 HTTP                                   one Lua call per request
+client ──▶ [ XDP: bans, floods ] ──▶ [ gateway: ban → monthly → burst ] ──▶ Redis / Redis Cluster
+              optional, xdp/            │ every replica, any number          ▲ bans: hash + pub/sub
+                                        ├─▶ upstream (proxy mode)            │
+                                        └─▶ dashboard, SSE, /metrics         │
+                           Kubernetes: RateLimitPolicy / Tenant CRDs ──▶ hot swap on every replica
+```
+
 ## Deploy
 
 ```bash
@@ -52,11 +63,31 @@ helm install limitplane deploy/helm/limitplane
 ```
 
 - [docs/DEPLOY.md](docs/DEPLOY.md): Compose, Kustomize, Helm, ingress and Gateway API.
+- [docs/REDIS.md](docs/REDIS.md): single node vs Cluster, key layout, how bans propagate, outage behaviour.
+- [docs/XDP.md](docs/XDP.md): the optional eBPF fast path that drops banned sources and floods at the NIC.
 - [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events.
+
+## Code map
+
+| Path | What |
+|---|---|
+| `internal/limiter` | GCRA, monthly quota, bans, Redis script, fallback breaker |
+| `internal/redisx` | RESP2 client: pool, Cluster routing, pub/sub |
+| `internal/gateway` | the middleware: who, cost, check, headers |
+| `internal/policy` | policy file, validation, atomic hot swap |
+| `internal/autopilot` | storm bans, quota alerts, client labels |
+| `internal/server` | admin API, JWT, SSE hub, metrics, dashboard |
+| `internal/kube` | stdlib Kubernetes client, watches, Lease election |
+| `web/`, `site/` | dashboard (embedded) and landing page, no build step |
+| `xdp/` | eBPF program and loader, its own module |
+| `deploy/` | Kustomize, Helm chart, CRDs, observability, Gateway API examples |
 
 ## Develop
 
 ```bash
 make test    # go test -race ./...
 make lint    # go vet + gofmt
+make bench
+make prove-cluster   # 3-master Redis Cluster, two gateways
+cd xdp && ./test.sh  # XDP proof in a privileged Docker container
 ```
