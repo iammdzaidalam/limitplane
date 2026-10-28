@@ -19,6 +19,8 @@ jobs:
       - name: stdlib only
         run: |
           if grep -Eq '^require|^\s*require\s' go.mod; then echo "go.mod must have no require"; exit 1; fi
+      - name: globe copies match
+        run: cmp site/globe.js web/globe.js
   docker:
     runs-on: ubuntu-latest
     needs: test

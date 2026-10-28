@@ -56,7 +56,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
       </div>
 
       <div class="grid">
-      <div class="kpis c8" role="group" aria-label="Totals since start">
+      <div class="kpis c7" role="group" aria-label="Totals since start">
         <div class="kpi"><span>Requests</span><b id="kTotal">0</b></div>
         <div class="kpi"><span>Allowed</span><b id="kAllowed">0</b></div>
         <div class="kpi"><span>Blocked</span><b id="kBlocked">0</b></div>
@@ -64,10 +64,10 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         <div class="kpi"><span>Last 5s avg</span><b id="kNow">0.0<small>/s</small></b></div>
         <div class="kpi"><span>Bans active</span><b id="kBans">0</b></div>
       </div>
-      <section class="card c4 globecard" aria-labelledby="h-globe">
+      <section class="card c5 globecard" aria-labelledby="h-globe">
         <div class="ch"><h2 id="h-globe">Live decisions</h2><span class="spacer"></span><span class="micro">placed by hash</span></div>
         <div class="tile globetile">
-          <canvas id="globe" role="img" aria-label="Dotted globe with a ping for each decision in the last few seconds. Clients are placed by a hash of their id, not by location."></canvas>
+          <canvas id="globe" role="img" aria-label="Dotted globe with a ping for each live decision. Clients are placed near a city by a hash of their id, not by location."></canvas>
         </div>
       </section>
       </div>
@@ -259,6 +259,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 </dialog>
 
 <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
+<script src="globe.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

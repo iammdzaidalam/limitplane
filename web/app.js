@@ -47,7 +47,7 @@ function toggleTheme() {
   const root = document.documentElement
   root.dataset.theme = isDark() ? 'light' : 'dark'
   try { localStorage.setItem('lp-theme', root.dataset.theme) } catch {}
-  draw(); paintGlobe()
+  draw()
 }
 $('#theme').onclick = toggleTheme
 if (!/Mac|iPhone|iPad/.test(navigator.platform)) $$('.mod').forEach(e => { e.textContent = 'Ctrl ' })
@@ -90,7 +90,6 @@ function show(authed) {
   for (const id of ['tabs', 'logout', 'helpBtn', 'cmdk']) $('#' + id).hidden = !authed
   $('[data-tab=try]').hidden = proxied
   if (!authed) { $('#key').type = 'password'; $('#keyShow').setAttribute('aria-pressed', false); $('#key').focus() }
-  globeRun()
 }
 
 // views
@@ -101,7 +100,7 @@ function route(focus) {
   $$('[data-view]').forEach(e => { e.hidden = e.dataset.view !== v })
   $$('[data-tab]').forEach(a => a.dataset.tab === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'))
   document.title = v[0].toUpperCase() + v.slice(1) + ' · LimitPlane'
-  draw(); globeRun()
+  draw()
   const a = document.activeElement
   if (focus && (a === document.body || a.closest('nav'))) $('#h-' + v).focus({ preventScroll: true })
 }
@@ -119,7 +118,6 @@ function start() {
 
 function tick() {
   advance(); draw(); updateNotice()
-  if (!globe.raf) paintGlobe()
   $('#finding').textContent = finding()
   $$('[data-until]').forEach(e => { e.textContent = left(e.dataset.until) })
   const last = series[series.length - 1]
@@ -382,8 +380,7 @@ function onDecision(d) {
   const b = series.find(p => p.t === t) || series[series.length - 1]
   if (b) d.allowed ? b.allowed++ : b.blocked++
   if (d.degraded) degradedUntil = Date.now() + 8000
-  globe.pings.push({ at: spot(d.client || '?'), t: performance.now(), color: d.allowed ? '--ok' : d.reason === 'burst' ? '--warn' : '--bad' })
-  if (globe.pings.length > 200) globe.pings.shift()
+  globe.decision(d.client || '?', d.allowed ? 'ok' : d.reason === 'burst' ? 'warn' : 'bad', d.allowed ? 'ok' : d.reason)
   ingest(d)
   frame ||= requestAnimationFrame(() => { frame = 0; renderFeed(); renderTotals() })
 }
@@ -731,55 +728,8 @@ function describe(method, url, r, text) {
 }
 $$('[data-try]').forEach(b => { b.onclick = () => fire(b.dataset.try, b) })
 
-// globe: a dotted sphere with a ping per recent decision, placed by a hash of the client id (not geography)
-const still = matchMedia('(prefers-reduced-motion: reduce)')
-const globe = { pings: [], rot: 0, last: 0, raf: 0, seen: false }
-const dots = Array.from({ length: 700 }, (_, i) => {
-  const y = 1 - 2 * (i + .5) / 700, r = Math.sqrt(1 - y * y), t = i * 2.39996
-  return [Math.cos(t) * r, y, Math.sin(t) * r]
-})
-const hash = s => { let x = 2166136261; for (const c of s) x = Math.imul(x ^ c.codePointAt(0), 16777619); return (x >>> 0) / 4294967296 }
-function spot(id) {
-  const lat = Math.asin(2 * hash(id + '#') - 1), lon = hash(id) * 2 * Math.PI
-  return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)]
-}
-
-function paintGlobe(now = performance.now()) {
-  const c = $('#globe'), w = c.clientWidth, ht = c.clientHeight
-  if (!w) return
-  const dpr = devicePixelRatio || 1, bw = Math.round(w * dpr), bh = Math.round(ht * dpr)
-  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh }
-  const g = c.getContext('2d'), v = css()
-  g.setTransform(dpr, 0, 0, dpr, 0, 0)
-  g.clearRect(0, 0, w, ht)
-  if (globe.raf) globe.rot += (now - (globe.last || now)) * 1.2e-4
-  globe.last = now
-  const R = Math.min(w, ht) / 2 - 10, cx = w / 2, cy = ht / 2
-  const sa = Math.sin(globe.rot), ca = Math.cos(globe.rot), st = Math.sin(.35), ct = Math.cos(.35)
-  const proj = ([x, y, z]) => { const x1 = x * ca + z * sa, z1 = z * ca - x * sa; return [cx + x1 * R, cy - (y * ct - z1 * st) * R, y * st + z1 * ct] }
-  g.fillStyle = v('--muted')
-  for (const d of dots) {
-    const [px, py, pz] = proj(d)
-    if (pz > 0) { g.globalAlpha = .12 + .5 * pz; g.fillRect(px - .7, py - .7, 1.4, 1.4) }
-  }
-  globe.pings = globe.pings.filter(p => now - p.t < 4000)
-  for (const p of globe.pings) {
-    const [px, py, pz] = proj(p.at), age = (now - p.t) / 4000
-    if (pz <= 0) continue
-    g.globalAlpha = 1 - age; g.fillStyle = g.strokeStyle = v(p.color); g.lineWidth = 1
-    g.beginPath(); g.arc(px, py, 2.2, 0, 7); g.fill()
-    if (!still.matches) { g.beginPath(); g.arc(px, py, 2.2 + age * 12, 0, 7); g.stroke() }
-  }
-  g.globalAlpha = 1
-}
-// animate only while signed in, on screen and in a visible tab
-function globeRun() {
-  if (!token || !globe.seen || document.hidden || still.matches) { cancelAnimationFrame(globe.raf); globe.raf = 0; globe.last = 0; return }
-  globe.raf ||= requestAnimationFrame(function loop(t) { paintGlobe(t); globe.raf = requestAnimationFrame(loop) })
-}
-new IntersectionObserver(([e]) => { globe.seen = e.isIntersecting; globeRun() }).observe($('#globe'))
-new ResizeObserver(() => paintGlobe()).observe($('#globe'))
-document.addEventListener('visibilitychange', globeRun)
+// globe: a ping per live decision, near a city picked by a hash of the client id (not geography)
+const globe = clientGlobe($('#globe'))
 
 // command palette: a combobox over a listbox; the input keeps focus, arrows move the active option
 const pal = $('#palette'), palQ = $('#palQ'), palList = $('#palList')

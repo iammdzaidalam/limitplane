@@ -102,7 +102,7 @@ h1:focus { outline: none; }
 .kpi span { display: block; font: 500 11px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi b { display: block; font-size: 30px; line-height: 38px; font-weight: 400; letter-spacing: -.04em; margin-top: 10px; }
 .kpi small { font-size: 13px; color: var(--muted); margin-left: 2px; letter-spacing: 0; }
-.globetile { flex: 1; position: relative; min-height: 168px; }
+.globetile { flex: 1; position: relative; min-height: 340px; }
 #globe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 /* controls: pills */
@@ -335,7 +335,7 @@ pre.out { padding: 14px 16px; font: 12.5px/1.6 var(--mono); white-space: pre-wra
   .feed button { padding-inline: 16px; }
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .kpi { padding: 14px 16px 16px; }
-  .globetile { min-height: 220px; }
+  .globetile { min-height: 320px; }
   .kpi b { font-size: 24px; }
   .plot { min-height: 220px; }
   .btn, input, .btn.small { height: 40px; }

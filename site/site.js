@@ -53,65 +53,9 @@ function cells(el, n) {
 
 const el = (tag, cls, html) => Object.assign(document.createElement(tag), { className: cls, innerHTML: html })
 
-// globe: a dot sphere; every decision in this tab pings it, placed by a hash of the client id
-const globe = (() => {
-  const cv = $('#globe'), ctx = cv.getContext('2d'), pts = [], pings = [], N = 1200, GA = Math.PI * (3 - Math.sqrt(5))
-  for (let i = 0; i < N; i++) { const y = 1 - 2 * (i + .5) / N, r = Math.sqrt(1 - y * y); pts.push([Math.cos(i * GA) * r, y, Math.sin(i * GA) * r]) }
-  const css = getComputedStyle(document.documentElement), C = { ok: css.getPropertyValue('--ok'), warn: css.getPropertyValue('--warn'), bad: css.getPropertyValue('--bad') }
-  let rot = 0, tilt = -.35, w = 0, h = 0, dpr = 1, raf = 0, last = 0, drag = null
-  const g = { visible: false }
-  const proj = ([x, y, z]) => {
-    const c = Math.cos(rot), s = Math.sin(rot), X = x * c + z * s, Z = z * c - x * s, ct = Math.cos(tilt), st = Math.sin(tilt)
-    return [X, y * ct - Z * st, y * st + Z * ct]
-  }
-  function draw(now = performance.now()) {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h)
-    const R = Math.min(w, h) * .42, cx = w / 2, cy = h / 2
-    ctx.fillStyle = getComputedStyle(cv).color
-    for (const p of pts) {
-      const [X, Y, Z] = proj(p)
-      ctx.globalAlpha = Z < 0 ? .12 : .3 + .6 * Z
-      ctx.fillRect(cx + X * R - .8, cy - Y * R - .8, 1.6, 1.6)
-    }
-    while (pings.length && !reduce.matches && now - pings[0].t > 2000) pings.shift()
-    for (const p of pings) {
-      const [X, Y, Z] = proj(p.v), x = cx + X * R, y = cy - Y * R, k = reduce.matches ? 0 : (now - p.t) / 2000
-      ctx.globalAlpha = (Z < 0 ? .25 : 1) * (1 - k)
-      ctx.fillStyle = ctx.strokeStyle = C[p.c]
-      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill()
-      if (k) { ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 3 + k * 16, 0, 7); ctx.stroke() }
-    }
-    ctx.globalAlpha = 1
-  }
-  const tick = now => {
-    raf = 0
-    if (!drag && !reduce.matches) rot += Math.min(now - last, 50) * .00012
-    last = now; draw(now)
-    if (g.visible && !document.hidden && !reduce.matches) raf = requestAnimationFrame(tick)
-  }
-  const start = () => { if (!raf && g.visible) { last = performance.now(); raf = requestAnimationFrame(tick) } }
-  const size = () => { dpr = Math.min(devicePixelRatio || 1, 2); w = cv.clientWidth; h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr; draw() }
-  new ResizeObserver(size).observe(cv)
-  new IntersectionObserver(es => { g.visible = es[0].isIntersecting; start() }).observe(cv)
-  document.addEventListener('visibilitychange', start)
-  reduce.addEventListener('change', start)
-  cv.onpointerdown = e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId) }
-  cv.onpointermove = e => {
-    if (!drag) return
-    rot += (e.clientX - drag[0]) * .008; tilt = Math.max(-1.2, Math.min(1.2, tilt + (e.clientY - drag[1]) * .005))
-    drag = [e.clientX, e.clientY]; draw()
-  }
-  cv.onpointerup = cv.onpointercancel = () => { drag = null }
-  g.ping = (id, c) => {
-    let a = 2166136261, b = 0
-    for (const ch of id) { a = Math.imul(a ^ ch.charCodeAt(0), 16777619); b = Math.imul(b ^ a, 2246822507) + 1 }
-    const lat = Math.asin(2 * ((a >>> 0) / 2 ** 32) - 1), lon = 2 * Math.PI * ((b >>> 0) / 2 ** 32)
-    pings.push({ v: [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)], c, t: performance.now() })
-    if (pings.length > 60) pings.shift()
-    if (reduce.matches && g.visible) draw(); else start()
-  }
-  return g
-})()
+// globe: every decision in this tab pings it, near a city picked by a hash of the client id
+const globe = clientGlobe($('#globe'))
+new IntersectionObserver(es => { globe.visible = es[0].isIntersecting }).observe($('#globe'))
 
 // mini dashboard in the hero window: rolling 40 s of per-second counts, latest rows, busiest clients
 const mini = (() => {
@@ -154,7 +98,7 @@ const mini = (() => {
 let decisions = 0
 function emit(id, r, path, at) {
   $('#count').textContent = fmt(++decisions)
-  if (!at) globe.ping(id, r.status === 200 ? 'ok' : r.reason === 'burst' ? 'warn' : 'bad')
+  if (!at) globe.decision(id, r.status === 200 ? 'ok' : r.reason === 'burst' ? 'warn' : 'bad', `${r.status} ${r.reason}`)
   mini.add(id, r, path, at)
 }
 
