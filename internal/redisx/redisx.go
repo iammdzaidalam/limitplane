@@ -44,8 +44,25 @@ type conn struct {
 	w  *bufio.Writer
 }
 
-// Dial connects to addr ("host:port" or "redis[s]://[user]:pass@host:port/db") and checks it with one connection.
+// Dial is New plus one connection to check the server is there.
 func Dial(addr string) (*Client, error) {
+	c, err := New(addr)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cn, err := c.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.put(cn)
+	return c, nil
+}
+
+// New parses addr ("host:port" or "redis[s]://[user]:pass@host:port/db") without connecting:
+// connections are made on demand, so a Redis that isn't up yet is retried by later commands.
+func New(addr string) (*Client, error) {
 	c := &Client{addr: addr, idle: make(chan *conn, poolSize)}
 	if strings.Contains(addr, "://") {
 		u, err := url.Parse(addr)
@@ -72,17 +89,15 @@ func Dial(addr string) (*Client, error) {
 			c.tls = &tls.Config{ServerName: u.Hostname()}
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cn, err := c.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	c.put(cn)
 	return c, nil
 }
 
 func (c *Client) dial(ctx context.Context) (*conn, error) {
+	if _, ok := ctx.Deadline(); !ok { // a blackholed host would otherwise hang until the OS gives up
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		defer cancel()
+	}
 	var nc net.Conn
 	var err error
 	if c.tls != nil {

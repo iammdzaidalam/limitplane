@@ -46,8 +46,10 @@ func TestHubStatsAndMetrics(t *testing.T) {
 		t.Fatalf("per tenant %+v", per)
 	}
 
+	h.Quota("acme", 85, 100)
+	h.Quota("evil\"tenant", 1, 2) // unknown: no label
 	var b strings.Builder
-	h.writeMetrics(&b, 2)
+	h.writeMetrics(&b, 2, time.Now())
 	out := b.String()
 	for _, want := range []string{
 		`limitplane_decisions_total{tenant="acme",reason="ok"} 1`,
@@ -58,6 +60,7 @@ func TestHubStatsAndMetrics(t *testing.T) {
 		`limitplane_check_seconds_bucket{le="0.00025"} 3`,
 		`limitplane_check_seconds_bucket{le="+Inf"} 3`,
 		"limitplane_check_seconds_count 3",
+		`limitplane_quota_used_ratio{tenant="acme"} 0.85`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("metrics missing %q\n%s", want, out)
@@ -65,6 +68,12 @@ func TestHubStatsAndMetrics(t *testing.T) {
 	}
 	if strings.Contains(out, "evil") {
 		t.Error("unknown tenant leaked into labels")
+	}
+	// Next month the gauge is stale until the tenant's next request.
+	b.Reset()
+	h.writeMetrics(&b, -1, time.Now().AddDate(0, 1, 0))
+	if out := b.String(); strings.Contains(out, `ratio{tenant="acme"}`) || strings.Contains(out, "bans_active") {
+		t.Errorf("stale gauge or unknown bans count:\n%s", out)
 	}
 }
 

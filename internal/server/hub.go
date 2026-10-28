@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -64,7 +65,12 @@ type Hub struct {
 
 	subMu sync.Mutex
 	subs  map[chan []byte]struct{}
+
+	quota sync.Map // tenant -> *quotaGauge, written on the request path
 }
+
+// quotaGauge is a tenant's latest used/limit ratio and when it was set (unix seconds).
+type quotaGauge struct{ ratio, at atomic.Int64 }
 
 func NewHub(observe func(gateway.Decision), known func() map[string]string) *Hub {
 	h := &Hub{
@@ -111,6 +117,21 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 func (h *Hub) Done() <-chan struct{} { return h.done }
+
+// Quota records a tenant's monthly usage for limitplane_quota_used_ratio. It takes no lock:
+// after a tenant's first call it is a sync.Map hit and three atomic stores.
+func (h *Hub) Quota(tenant string, used, limit int64) {
+	if limit <= 0 {
+		return
+	}
+	g, ok := h.quota.Load(tenant)
+	if !ok {
+		g, _ = h.quota.LoadOrStore(tenant, new(quotaGauge))
+	}
+	q := g.(*quotaGauge)
+	q.ratio.Store(int64(math.Float64bits(float64(used) / float64(limit))))
+	q.at.Store(time.Now().Unix())
+}
 
 func (h *Hub) process(e event) {
 	d := e.d
@@ -249,8 +270,8 @@ func (h *Hub) snapshot(now time.Time) (stats, map[string]counts) {
 	return s, per
 }
 
-// writeMetrics renders Prometheus text exposition format 0.0.4.
-func (h *Hub) writeMetrics(w io.Writer, bans int) {
+// writeMetrics renders Prometheus text exposition format 0.0.4. bans < 0 means unknown.
+func (h *Hub) writeMetrics(w io.Writer, bans int, now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	fmt.Fprint(w, "# HELP limitplane_decisions_total Rate limit decisions by tenant and reason.\n# TYPE limitplane_decisions_total counter\n")
@@ -262,7 +283,24 @@ func (h *Hub) writeMetrics(w io.Writer, bans int) {
 	}
 	fmt.Fprintf(w, "# HELP limitplane_degraded_total Decisions answered by the local fallback.\n# TYPE limitplane_degraded_total counter\nlimitplane_degraded_total %d\n", h.degraded)
 	fmt.Fprintf(w, "# HELP limitplane_events_dropped_total Decisions dropped because the event queue was full.\n# TYPE limitplane_events_dropped_total counter\nlimitplane_events_dropped_total %d\n", h.dropped.Load())
-	fmt.Fprintf(w, "# HELP limitplane_bans_active Clients currently banned.\n# TYPE limitplane_bans_active gauge\nlimitplane_bans_active %d\n", bans)
+	if bans >= 0 {
+		fmt.Fprintf(w, "# HELP limitplane_bans_active Clients currently banned.\n# TYPE limitplane_bans_active gauge\nlimitplane_bans_active %d\n", bans)
+	}
+	// Last month's figure is stale once the month turns, until the tenant's next request.
+	y, m, _ := now.UTC().Date()
+	monthStart := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC).Unix()
+	ratios := map[string]float64{}
+	h.quota.Range(func(k, v any) bool {
+		q := v.(*quotaGauge)
+		if _, known := h.tenantSet[k.(string)]; known && q.at.Load() >= monthStart {
+			ratios[k.(string)] = math.Float64frombits(uint64(q.ratio.Load()))
+		}
+		return true
+	})
+	fmt.Fprint(w, "# HELP limitplane_quota_used_ratio Share of the monthly quota used, per tenant.\n# TYPE limitplane_quota_used_ratio gauge\n")
+	for _, t := range slices.Sorted(maps.Keys(ratios)) {
+		fmt.Fprintf(w, "limitplane_quota_used_ratio{tenant=%s} %g\n", quote(t), ratios[t])
+	}
 	fmt.Fprint(w, "# HELP limitplane_check_seconds Time spent deciding a request.\n# TYPE limitplane_check_seconds histogram\n")
 	var cum int64
 	for i, le := range latencyBuckets {

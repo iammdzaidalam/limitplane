@@ -19,13 +19,11 @@ import (
 const KeyHeader = "X-Api-Key" // canonical form, so Header.Get skips an alloc
 
 type Config struct {
-	Policy  *policy.Store
-	Limiter limiter.Limiter
-	Quota   limiter.Quota // nil disables monthly caps
-	Bans    Bans          // nil disables bans
+	Policy *policy.Store
+	Meter  limiter.Meter
 	// OnDecision runs synchronously on the request path: it must not block (hand off to a channel or counter).
 	OnDecision func(Decision)
-	// OnQuota reports a named tenant's monthly usage after each spend; same rule as OnDecision.
+	// OnQuota reports a named tenant's monthly usage after each check; same rule as OnDecision.
 	OnQuota    func(tenant string, used, limit int64)
 	TrustProxy bool
 	FailClosed bool // backend error -> 503 instead of allowing
@@ -43,23 +41,15 @@ func DecisionFrom(ctx context.Context) (Decision, bool) {
 	return d, ok
 }
 
-// Middleware meters each request: ban -> burst -> monthly.
-// Burst runs before monthly so a request the burst limiter rejects never bills the plan;
-// the reverse order would need a refund. A monthly reject does burn burst tokens, but those
-// refill on their own and the tenant is blocked until the month rolls over anyway.
+// Middleware meters each request with one Meter.Check: ban -> monthly -> burst, and nothing is
+// spent unless all three pass. So a burst reject never bills the plan and a monthly reject never
+// uses up burst. Monthly is checked before burst because it is the stickier answer: a tenant out
+// of quota is told to wait for the 1st, not to retry in two seconds.
 func (g *Gateway) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		ip := ClientIP(r, g.c.TrustProxy)
 		d := Decision{Time: now, Client: ip, Method: r.Method, Path: r.URL.Path}
-
-		if g.c.Bans != nil {
-			if until, ok := g.c.Bans.Banned(ip); ok {
-				d.Reason, d.RetryAfter = ReasonBanned, until.Sub(now)
-				g.finish(w, r, next, d, d.RetryAfter)
-				return
-			}
-		}
 
 		m := g.c.Policy.Resolve(r.Header.Get(KeyHeader), d.Path)
 		d.Tenant, d.Tier, d.Cost = m.Tenant, m.Tier, m.Cost
@@ -68,7 +58,7 @@ func (g *Gateway) Middleware(next http.Handler) http.Handler {
 			key = "anon:" + ip
 		}
 
-		res, err := g.c.Limiter.Allow(r.Context(), key, m.Rate, m.Cost)
+		res, err := g.c.Meter.Check(r.Context(), limiter.Request{Client: ip, Key: key, Rate: m.Rate, Cost: m.Cost, Month: m.Month})
 		if err != nil {
 			if g.c.FailClosed {
 				d.Reason = ReasonError
@@ -78,35 +68,24 @@ func (g *Gateway) Middleware(next http.Handler) http.Handler {
 			res = limiter.Result{Allowed: true, Limit: m.Rate.Burst, Remaining: m.Rate.Burst, Degraded: true}
 		}
 		d.Limit, d.Remaining, d.RetryAfter, d.Degraded = res.Limit, res.Remaining, res.RetryAfter, res.Degraded
-		reset := res.ResetAfter
-		if !res.Allowed {
+		if err == nil && m.Month > 0 && !m.Anon && res.Reason != limiter.Banned && g.c.OnQuota != nil {
+			g.c.OnQuota(m.Tenant, res.Used, m.Month)
+		}
+		switch res.Reason {
+		case limiter.Banned:
+			d.Reason = ReasonBanned
+			g.finish(w, r, next, d, d.RetryAfter)
+		case limiter.Monthly:
+			d.Reason, d.Limit, d.Remaining = ReasonMonthly, m.Month, max(0, m.Month-res.Used)
+			d.RetryAfter = nextMonth(now).Sub(now)
+			g.finish(w, r, next, d, d.RetryAfter)
+		case limiter.Burst:
 			d.Reason = ReasonBurst
-			g.finish(w, r, next, d, reset)
-			return
+			g.finish(w, r, next, d, res.ResetAfter)
+		default:
+			d.Allowed, d.Reason = true, ReasonOK
+			g.finish(w, r, next, d, res.ResetAfter)
 		}
-
-		if m.Month > 0 && g.c.Quota != nil {
-			used, ok, err := g.c.Quota.Spend(r.Context(), limiter.MonthKey(key, now), m.Month, m.Cost)
-			switch {
-			case err != nil && g.c.FailClosed:
-				d.Reason = ReasonError
-				g.finish(w, r, next, d, 0)
-				return
-			case err != nil:
-				d.Degraded = true
-			case g.c.OnQuota != nil && !m.Anon:
-				g.c.OnQuota(m.Tenant, used, m.Month)
-			}
-			if err == nil && !ok {
-				d.Reason, d.Limit, d.Remaining = ReasonMonthly, m.Month, max(0, m.Month-used)
-				d.RetryAfter = nextMonth(now).Sub(now)
-				g.finish(w, r, next, d, d.RetryAfter)
-				return
-			}
-		}
-
-		d.Allowed, d.Reason = true, ReasonOK
-		g.finish(w, r, next, d, reset)
 	})
 }
 

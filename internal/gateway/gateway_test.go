@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,56 +13,20 @@ import (
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
-// fakeLimiter grants up to Burst units per key, then denies with a fixed RetryAfter.
-type fakeLimiter struct {
-	mu    sync.Mutex
-	spent map[string]int64
-	err   error
+// countingMeter wraps a real Meter, counts calls and can fail on demand.
+type countingMeter struct {
+	limiter.Meter
 	calls int
+	err   error
 }
 
-func (f *fakeLimiter) Allow(_ context.Context, key string, r limiter.Rate, cost int64) (limiter.Result, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	if f.err != nil {
-		return limiter.Result{}, f.err
+func (m *countingMeter) Check(ctx context.Context, q limiter.Request) (limiter.Result, error) {
+	m.calls++
+	if m.err != nil {
+		return limiter.Result{}, m.err
 	}
-	if f.spent == nil {
-		f.spent = map[string]int64{}
-	}
-	if f.spent[key]+cost > r.Burst {
-		return limiter.Result{Limit: r.Burst, RetryAfter: 2100 * time.Millisecond, ResetAfter: 4 * time.Second}, nil
-	}
-	f.spent[key] += cost
-	return limiter.Result{Allowed: true, Limit: r.Burst, Remaining: r.Burst - f.spent[key], ResetAfter: time.Second}, nil
+	return m.Meter.Check(ctx, q)
 }
-
-type fakeQuota struct {
-	mu   sync.Mutex
-	used map[string]int64
-	err  error
-}
-
-func (f *fakeQuota) Spend(_ context.Context, key string, limit, cost int64) (int64, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return 0, false, f.err
-	}
-	if f.used == nil {
-		f.used = map[string]int64{}
-	}
-	if f.used[key]+cost > limit {
-		return f.used[key], false, nil
-	}
-	f.used[key] += cost
-	return f.used[key], true, nil
-}
-
-type fakeBans map[string]time.Time
-
-func (b fakeBans) Banned(c string) (time.Time, bool) { t, ok := b[c]; return t, ok }
 
 func testPolicy() *policy.Store {
 	return policy.NewStore(policy.Config{
@@ -78,15 +41,16 @@ func testPolicy() *policy.Store {
 
 type rig struct {
 	g         *Gateway
-	lim       *fakeLimiter
-	quota     *fakeQuota
+	mem       *limiter.Memory
+	meter     *countingMeter
 	decisions []Decision
 	inner     []Decision
 }
 
 func newRig(mod func(*Config)) *rig {
-	rg := &rig{lim: &fakeLimiter{}, quota: &fakeQuota{}}
-	c := Config{Policy: testPolicy(), Limiter: rg.lim, Quota: rg.quota, OnDecision: func(d Decision) { rg.decisions = append(rg.decisions, d) }}
+	rg := &rig{mem: limiter.NewMemory()}
+	rg.meter = &countingMeter{Meter: rg.mem}
+	c := Config{Policy: testPolicy(), Meter: rg.meter, OnDecision: func(d Decision) { rg.decisions = append(rg.decisions, d) }}
 	if mod != nil {
 		mod(&c)
 	}
@@ -126,7 +90,7 @@ func TestAllowSetsHeadersAndContext(t *testing.T) {
 	if w.Code != 200 || len(rg.inner) != 1 || rg.inner[0].Tenant != "acme" || rg.inner[0].Cost != 5 {
 		t.Fatalf("code %d inner %+v", w.Code, rg.inner)
 	}
-	for k, v := range map[string]string{"RateLimit-Limit": "10", "RateLimit-Remaining": "5", "RateLimit-Reset": "1", "X-RateLimit-Remaining": "5"} {
+	for k, v := range map[string]string{"RateLimit-Limit": "10", "RateLimit-Remaining": "5", "RateLimit-Reset": "5", "X-RateLimit-Remaining": "5"} {
 		if got := w.Header().Get(k); got != v {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
@@ -136,67 +100,77 @@ func TestAllowSetsHeadersAndContext(t *testing.T) {
 	}
 }
 
-// Burst runs before monthly, so a burst-denied request must not bill the plan.
+// A burst-denied request must not bill the plan.
 func TestBurstDenyDoesNotSpendMonthly(t *testing.T) {
-	rg := newRig(nil)
+	rg := newRig(func(c *Config) { c.Policy = bigMonthPolicy() })
 	rg.do("/v1/generate")
 	rg.do("/v1/generate")
 	w := rg.do("/v1/generate") // 15 > burst 10
-	if w.Code != 429 || w.Header().Get("Retry-After") != "3" {
+	if w.Code != 429 || w.Header().Get("Retry-After") != "5" {
 		t.Fatalf("code %d retry-after %q", w.Code, w.Header().Get("Retry-After"))
 	}
 	b := decode(t, w)
-	if b.Error != "rate_limited" || b.Reason != ReasonBurst || b.RetryAfter != 3 || b.Message == "" {
+	if b.Error != "rate_limited" || b.Reason != ReasonBurst || b.RetryAfter != 5 || b.Message == "" {
 		t.Fatalf("body %+v", b)
 	}
-	if got := rg.quota.used[limiter.MonthKey("acme", time.Now())]; got != 10 {
+	if got, _ := rg.mem.Used(context.Background(), "acme"); got != 10 {
 		t.Fatalf("monthly used = %d, want 10 (denied request billed)", got)
 	}
 }
 
+// Burst is empty too here; monthly wins because it is the answer that holds until the 1st.
+// (That a monthly reject keeps burst is tested in the limiter package.)
 func TestMonthlyDeny(t *testing.T) {
 	rg := newRig(nil)
-	rg.quota.used = map[string]int64{limiter.MonthKey("acme", time.Now()): 10}
+	rg.do("/v1/generate")
+	rg.do("/v1/generate")      // 10 of 12 monthly used
 	w := rg.do("/v1/generate") // 10+5 > 12
 	if w.Code != 429 || decode(t, w).Reason != ReasonMonthly {
 		t.Fatalf("code %d body %s", w.Code, w.Body)
 	}
-	d := rg.decisions[0]
+	d := rg.decisions[2]
 	if d.Limit != 12 || d.Remaining != 2 || d.RetryAfter <= 0 || d.RetryAfter > 32*24*time.Hour {
 		t.Fatalf("decision %+v", d)
 	}
-	if len(rg.inner) != 0 {
+	if len(rg.inner) != 2 {
 		t.Fatal("next called on deny")
 	}
 }
 
-func TestBannedSkipsLimiter(t *testing.T) {
-	rg := newRig(func(c *Config) { c.Bans = fakeBans{"192.0.2.1": time.Now().Add(90 * time.Second)} })
+func TestBanned(t *testing.T) {
+	rg := newRig(nil)
+	rg.mem.Ban(context.Background(), limiter.Ban{Client: "192.0.2.0/24", Until: time.Now().Add(90 * time.Second)})
 	w := rg.do("/")
-	if w.Code != 429 || decode(t, w).Reason != ReasonBanned || rg.lim.calls != 0 {
-		t.Fatalf("code %d body %s calls %d", w.Code, w.Body, rg.lim.calls)
+	if w.Code != 429 || decode(t, w).Reason != ReasonBanned || rg.meter.calls != 1 {
+		t.Fatalf("code %d body %s calls %d", w.Code, w.Body, rg.meter.calls)
 	}
 	if ra := w.Header().Get("Retry-After"); ra != "90" {
 		t.Fatalf("Retry-After %q", ra)
 	}
+	if got, _ := rg.mem.Used(context.Background(), "acme"); got != 0 {
+		t.Fatalf("banned request billed %d", got)
+	}
+}
+
+func bigMonthPolicy() *policy.Store {
+	s := testPolicy()
+	c := s.Config()
+	c.Tiers["free"] = policy.Tier{Rate: c.Tiers["free"].Rate, Monthly: 1000}
+	s.Swap(c)
+	return s
 }
 
 func TestBackendError(t *testing.T) {
 	boom := errors.New("redis down")
 	closed := newRig(func(c *Config) { c.FailClosed = true })
-	closed.lim.err = boom
+	closed.meter.err = boom
 	if w := closed.do("/"); w.Code != 503 || decode(t, w).Reason != ReasonError {
 		t.Fatalf("fail-closed: code %d body %s", w.Code, w.Body)
 	}
 	open := newRig(nil)
-	open.lim.err = boom
+	open.meter.err = boom
 	if w := open.do("/"); w.Code != 200 || !open.decisions[0].Degraded {
 		t.Fatalf("fail-open: code %d decision %+v", w.Code, open.decisions)
-	}
-	q := newRig(func(c *Config) { c.FailClosed = true })
-	q.quota.err = boom
-	if w := q.do("/"); w.Code != 503 {
-		t.Fatalf("quota fail-closed: code %d", w.Code)
 	}
 }
 
@@ -241,20 +215,15 @@ func TestClientIP(t *testing.T) {
 	}
 }
 
-type nopLimiter struct{}
+type nopMeter struct{}
 
-func (nopLimiter) Allow(context.Context, string, limiter.Rate, int64) (limiter.Result, error) {
-	return limiter.Result{Allowed: true, Limit: 10, Remaining: 9}, nil
+func (nopMeter) Check(context.Context, limiter.Request) (limiter.Result, error) {
+	return limiter.Result{Allowed: true, Limit: 10, Remaining: 9, Used: 1}, nil
 }
-
-type nopQuota struct{}
-
-func (nopQuota) Spend(context.Context, string, int64, int64) (int64, bool, error) {
-	return 1, true, nil
-}
+func (nopMeter) Used(context.Context, string) (int64, error) { return 1, nil }
 
 func BenchmarkMiddleware(b *testing.B) {
-	g := New(Config{Policy: testPolicy(), Limiter: nopLimiter{}, Quota: nopQuota{}, OnDecision: func(Decision) {}})
+	g := New(Config{Policy: testPolicy(), Meter: nopMeter{}, OnDecision: func(Decision) {}})
 	h := g.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	r := httptest.NewRequest("GET", "/v1/generate", nil)
 	r.Header.Set(KeyHeader, "k1")

@@ -1,6 +1,8 @@
 x-lp: &lp
   build: .
   command: ["--config", "/etc/limitplane/config.json", "--redis", "redis://redis:6379", "--upstream", "http://origin:80", "--trust-proxy"]
+  environment:
+    LIMITPLANE_REPLICAS: "2" # if Redis goes down, each replica falls back to half the budget
   volumes:
     - ./limitplane.example.json:/etc/limitplane/config.json:ro
   depends_on:

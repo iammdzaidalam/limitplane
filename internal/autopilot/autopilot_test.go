@@ -1,48 +1,90 @@
 package autopilot
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
+	"github.com/iammdzaidalam/limitplane/internal/limiter"
 )
 
-var _ gateway.Bans = (*Pilot)(nil)
+var ctx = context.Background()
+
+func banned(p *Pilot, client string) bool {
+	bs, _ := p.Bans(ctx)
+	return slices.ContainsFunc(bs, func(b Ban) bool { return b.Client == client })
+}
 
 func dec(client, path, reason string, at time.Time) gateway.Decision {
 	return gateway.Decision{Time: at, Client: client, Path: path, Reason: reason, Allowed: reason == gateway.ReasonOK, RetryAfter: 2 * time.Second}
 }
 
-func TestBanExpiresWithoutGoroutine(t *testing.T) {
+func TestBanGoesToStore(t *testing.T) {
 	var got []Ban
-	p := New(Config{OnBan: func(b Ban) { got = append(got, b) }})
-	p.Ban("a", time.Hour, "manual")
-	p.Ban("b", time.Millisecond, "manual")
-	if _, ok := p.Banned("a"); !ok || len(got) != 2 {
-		t.Fatalf("ban a missing, OnBan calls %d", len(got))
+	store := limiter.NewBanList()
+	p := New(Config{Store: store, OnBan: func(b Ban) { got = append(got, b) }})
+	p.Ban(ctx, "a", time.Hour, "manual")
+	p.Ban(ctx, "b", time.Millisecond, "manual")
+	if _, ok := store.Banned("a", time.Now()); !ok || len(got) != 2 {
+		t.Fatalf("ban a missing from store, OnBan calls %d", len(got))
 	}
 	time.Sleep(5 * time.Millisecond)
-	if _, ok := p.Banned("b"); ok {
-		t.Fatal("expired ban still active")
-	}
-	if bs := p.Bans(); len(bs) != 1 || bs[0].Client != "a" {
+	if bs, _ := p.Bans(ctx); len(bs) != 1 || bs[0].Client != "a" {
 		t.Fatalf("Bans() = %+v", bs)
 	}
-	if len(p.bans) != 1 {
-		t.Fatal("expired ban not swept")
-	}
-	p.Unban("a")
-	if _, ok := p.Banned("a"); ok {
+	p.Unban(ctx, "a")
+	if banned(p, "a") {
 		t.Fatal("unban failed")
+	}
+}
+
+func TestRulesJSON(t *testing.T) {
+	r := DefaultRules
+	if err := json.Unmarshal([]byte(`{"stormBlocks":3,"banFor":"1m"}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r != (Rules{StormBlocks: 3, StormWindow: 10 * time.Second, BanFor: time.Minute}) {
+		t.Fatalf("absent stormWindow must keep the default: %+v", r)
+	}
+	for _, bad := range []string{`{"stormBlocks":-1}`, `{"banFor":"soon"}`, `{"stormWindow":"0s"}`} {
+		r := DefaultRules
+		if json.Unmarshal([]byte(bad), &r) == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	r = DefaultRules
+	if err := json.Unmarshal([]byte(`{"stormBlocks":0,"stormWindow":"0s"}`), &r); err != nil {
+		t.Fatalf("0 blocks disables the rule, windows don't matter: %v", err)
+	}
+}
+
+func TestSetRules(t *testing.T) {
+	p := New(Config{Rules: DefaultRules})
+	now := time.Now()
+	for i := range 3 {
+		p.Observe(dec("c", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*time.Millisecond)))
+	}
+	if banned(p, "c") {
+		t.Fatal("3 blocks banned under the default 20")
+	}
+	p.SetRules(Rules{StormBlocks: 3, StormWindow: time.Second, BanFor: time.Minute})
+	for i := range 3 { // a new block count restarts the client's window
+		p.Observe(dec("c", "/", gateway.ReasonBurst, now.Add(time.Duration(3+i)*time.Millisecond)))
+	}
+	if !banned(p, "c") || p.Rules().StormBlocks != 3 {
+		t.Fatal("new rules not applied")
 	}
 }
 
 func TestStorm(t *testing.T) {
 	var bans []Ban
-	p := New(Config{StormBlocks: 3, StormWindow: time.Second, BanFor: time.Minute, OnBan: func(b Ban) { bans = append(bans, b) }})
+	p := New(Config{Rules: Rules{StormBlocks: 3, StormWindow: time.Second, BanFor: time.Minute}, OnBan: func(b Ban) { bans = append(bans, b) }})
 	now := time.Now()
 	// 3 blocks spread over 3s: never 3 inside one second.
 	for i := range 3 {
@@ -59,10 +101,10 @@ func TestStorm(t *testing.T) {
 	for i := range 3 {
 		p.Observe(dec("fast", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*100*time.Millisecond)))
 	}
-	if _, ok := p.Banned("fast"); !ok || len(bans) != 2 || bans[1].Reason != "storm" {
+	if !banned(p, "fast") || len(bans) != 2 || bans[1].Reason != "storm" {
 		t.Fatalf("storm not banned: %+v", bans)
 	}
-	if _, ok := p.Banned("slow"); ok {
+	if banned(p, "slow") {
 		t.Fatal("slow client banned")
 	}
 }
@@ -171,17 +213,17 @@ func TestLRUEviction(t *testing.T) {
 }
 
 func TestConcurrent(t *testing.T) {
-	p := New(Config{StormBlocks: 5, StormWindow: time.Second, BanFor: time.Second, MaxClients: 50})
+	p := New(Config{Rules: Rules{StormBlocks: 5, StormWindow: time.Second, BanFor: time.Second}, MaxClients: 50})
 	var wg sync.WaitGroup
 	for g := range 8 {
 		wg.Go(func() {
 			for i := range 500 {
 				c := fmt.Sprint("c", (g*500+i)%80)
 				p.Observe(dec(c, "/", gateway.ReasonBurst, time.Now()))
-				p.Banned(c)
 				if i%50 == 0 {
 					p.Clients()
-					p.Bans()
+					p.Bans(ctx)
+					p.SetRules(DefaultRules)
 					p.Usage(c, 90, 100)
 				}
 			}
@@ -194,7 +236,7 @@ func TestConcurrent(t *testing.T) {
 }
 
 func BenchmarkObserve(b *testing.B) {
-	p := New(Config{StormBlocks: 10, StormWindow: time.Second, BanFor: time.Minute})
+	p := New(Config{Rules: Rules{StormBlocks: 10, StormWindow: time.Second, BanFor: time.Minute}})
 	d := dec("203.0.113.7", "/v1/generate", gateway.ReasonOK, time.Now())
 	b.ReportAllocs()
 	for b.Loop() {

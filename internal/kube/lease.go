@@ -172,7 +172,7 @@ func (c *Client) beat(ctx context.Context, id string, gen int64, owner *OwnerRef
 	return c.Update(ctx, c.Path(Leases, name), &l, nil)
 }
 
-// countReplicas counts replicas that heartbeated within maxAge and serve generation gen.
+// countReplicas counts replicas that heartbeated within maxAge and serve generation gen (any if gen < 0).
 func (c *Client) countReplicas(ctx context.Context, gen int64, maxAge time.Duration, now time.Time) (int, error) {
 	var l struct{ Items []Lease }
 	if err := c.Get(ctx, c.Path(Leases, "")+"?labelSelector="+replicaLabel+"%3Dtrue", &l); err != nil {
@@ -180,7 +180,7 @@ func (c *Client) countReplicas(ctx context.Context, gen int64, maxAge time.Durat
 	}
 	n := 0
 	for _, x := range l.Items {
-		if now.Sub(x.Spec.RenewTime.Time) < maxAge && x.Metadata.Annotations[generationAnn] == strconv.FormatInt(gen, 10) {
+		if now.Sub(x.Spec.RenewTime.Time) < maxAge && (gen < 0 || x.Metadata.Annotations[generationAnn] == strconv.FormatInt(gen, 10)) {
 			n++
 		}
 	}

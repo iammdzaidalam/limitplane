@@ -5,28 +5,72 @@ package autopilot
 import (
 	"cmp"
 	"container/list"
+	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
+	"github.com/iammdzaidalam/limitplane/internal/limiter"
 )
 
 type Config struct {
-	StormBlocks int // burst blocks within StormWindow that trigger a ban; 0 disables
-	StormWindow time.Duration
-	BanFor      time.Duration
-	MaxClients  int // fingerprints kept, least recently seen evicted; default 10000
-	// Callbacks run on the Observe caller's goroutine (the request path): keep them non-blocking.
+	Rules
+	MaxClients int              // fingerprints kept, least recently seen evicted; default 10000
+	Store      limiter.BanStore // where bans live, shared with the gateway's Meter; nil: in-process
+	// Callbacks run on the caller's goroutine (Observe runs on the request path): keep them non-blocking.
 	OnBan   func(Ban)
 	OnAlert func(Alert)
 }
 
-type Ban struct {
-	Client string    `json:"client"`
-	Until  time.Time `json:"until"`
-	Reason string    `json:"reason"`
+// Rules is the storm-ban rule. RateLimitPolicy spec.autopilot sets it with the same JSON names.
+type Rules struct {
+	StormBlocks int // burst blocks within StormWindow that trigger a ban; 0 disables
+	StormWindow time.Duration
+	BanFor      time.Duration
 }
+
+var DefaultRules = Rules{StormBlocks: 20, StormWindow: 10 * time.Second, BanFor: 5 * time.Minute}
+
+// UnmarshalJSON reads {"stormBlocks": 20, "stormWindow": "10s", "banFor": "5m"}; absent fields keep their value.
+func (r *Rules) UnmarshalJSON(b []byte) error {
+	var j struct {
+		StormBlocks *int   `json:"stormBlocks"`
+		StormWindow string `json:"stormWindow"`
+		BanFor      string `json:"banFor"`
+	}
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	if j.StormBlocks != nil {
+		r.StormBlocks = *j.StormBlocks
+	}
+	for _, f := range []struct {
+		s string
+		d *time.Duration
+	}{{j.StormWindow, &r.StormWindow}, {j.BanFor, &r.BanFor}} {
+		if f.s == "" {
+			continue
+		}
+		d, err := time.ParseDuration(f.s)
+		if err != nil {
+			return err
+		}
+		*f.d = d
+	}
+	return r.Validate()
+}
+
+func (r Rules) Validate() error {
+	if r.StormBlocks < 0 || r.StormBlocks > 0 && (r.StormWindow <= 0 || r.BanFor <= 0) {
+		return errors.New("autopilot: stormBlocks must be >= 0, and stormWindow and banFor > 0 when it is set")
+	}
+	return nil
+}
+
+type Ban = limiter.Ban
 
 // Alert fires once per tenant per month when usage crosses 80% of the monthly cap.
 type Alert struct {
@@ -37,10 +81,7 @@ type Alert struct {
 }
 
 type Pilot struct {
-	c Config
-
-	banMu sync.RWMutex
-	bans  map[string]Ban
+	c Config // Rules is guarded by mu; the rest is fixed
 
 	mu      sync.Mutex
 	lru     *list.List // of *track, front = most recently seen
@@ -52,69 +93,52 @@ func New(c Config) *Pilot {
 	if c.MaxClients <= 0 {
 		c.MaxClients = 10000
 	}
-	return &Pilot{c: c, bans: map[string]Ban{}, lru: list.New(), clients: map[string]*list.Element{}, alerted: map[string]string{}}
-}
-
-// Banned implements gateway.Bans. Expired bans read as absent; Ban/Bans sweep them out.
-func (p *Pilot) Banned(client string) (time.Time, bool) {
-	p.banMu.RLock()
-	b, ok := p.bans[client]
-	p.banMu.RUnlock()
-	if !ok || !time.Now().Before(b.Until) {
-		return time.Time{}, false
+	if c.Store == nil {
+		c.Store = limiter.NewBanList()
 	}
-	return b.Until, true
+	return &Pilot{c: c, lru: list.New(), clients: map[string]*list.Element{}, alerted: map[string]string{}}
 }
 
-func (p *Pilot) Ban(client string, d time.Duration, reason string) {
-	now := time.Now()
-	b := Ban{Client: client, Until: now.Add(d), Reason: reason}
-	p.banMu.Lock()
-	p.sweep(now)
-	p.bans[client] = b
-	p.banMu.Unlock()
+// SetRules swaps the storm rule at runtime (e.g. from a RateLimitPolicy).
+func (p *Pilot) SetRules(r Rules) {
+	p.mu.Lock()
+	p.c.Rules = r
+	p.mu.Unlock()
+}
+
+func (p *Pilot) Rules() Rules {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.c.Rules
+}
+
+// Ban records a ban in the store, where every replica's gateway sees it.
+func (p *Pilot) Ban(ctx context.Context, client string, d time.Duration, reason string) error {
+	b := Ban{Client: client, Until: time.Now().Add(d), Reason: reason}
+	if err := p.c.Store.Ban(ctx, b); err != nil {
+		return err
+	}
 	if p.c.OnBan != nil {
 		p.c.OnBan(b)
 	}
+	return nil
 }
 
-func (p *Pilot) Unban(client string) {
-	p.banMu.Lock()
-	delete(p.bans, client)
-	p.banMu.Unlock()
-}
+func (p *Pilot) Unban(ctx context.Context, client string) error { return p.c.Store.Unban(ctx, client) }
 
 // Bans lists active bans, soonest to expire first.
-func (p *Pilot) Bans() []Ban {
-	p.banMu.Lock()
-	p.sweep(time.Now())
-	out := make([]Ban, 0, len(p.bans))
-	for _, b := range p.bans {
-		out = append(out, b)
-	}
-	p.banMu.Unlock()
-	slices.SortFunc(out, func(a, b Ban) int { return a.Until.Compare(b.Until) })
-	return out
-}
-
-// sweep drops expired bans; callers hold banMu. Bans are few, so a full pass is cheap.
-func (p *Pilot) sweep(now time.Time) {
-	for k, b := range p.bans {
-		if !now.Before(b.Until) {
-			delete(p.bans, k)
-		}
-	}
-}
+func (p *Pilot) Bans(ctx context.Context) ([]Ban, error) { return p.c.Store.Bans(ctx) }
 
 // Observe feeds one gateway decision into the storm rule and the client's fingerprint.
 func (p *Pilot) Observe(d gateway.Decision) {
 	p.mu.Lock()
 	t := p.track(d.Client)
 	t.observe(d)
-	storm := p.c.StormBlocks > 0 && d.Reason == gateway.ReasonBurst && t.storm(d.Time, p.c.StormBlocks, p.c.StormWindow)
+	r := p.c.Rules
+	storm := r.StormBlocks > 0 && d.Reason == gateway.ReasonBurst && t.storm(d.Time, r.StormBlocks, r.StormWindow)
 	p.mu.Unlock()
 	if storm {
-		p.Ban(d.Client, p.c.BanFor, "storm")
+		p.Ban(context.Background(), d.Client, r.BanFor, "storm") // best effort: the next storm retries
 	}
 }
 

@@ -20,13 +20,18 @@ spec:
           for: 2m
           labels: {severity: critical}
           annotations:
-            summary: Redis is unreachable and replicas fall back to local limits, so the effective limit is multiplied by the replica count.
+            summary: Redis is unreachable. Each replica limits locally on its share of the budget, and monthly quotas are counted per replica.
         - alert: LimitPlaneBackendErrors
           expr: sum(rate(limitplane_decisions_total{service="limitplane",reason="error"}[5m])) > 0
           for: 2m
           labels: {severity: critical}
           annotations:
             summary: Redis is unreachable and fail-closed is returning 503s.
+        - alert: LimitPlaneTenantQuotaHigh
+          expr: max by (tenant) (limitplane_quota_used_ratio{service="limitplane"}) > 0.8
+          labels: {severity: warning}
+          annotations:
+            summary: Tenant {{ $labels.tenant }} has used more than 80% of its monthly quota.
         - alert: LimitPlaneTenantQuotaExhausted
           expr: sum by (tenant) (increase(limitplane_decisions_total{service="limitplane",reason="monthly"}[15m])) > 0
           labels: {severity: warning}

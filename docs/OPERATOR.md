@@ -44,6 +44,7 @@ spec:                          # the policy file format, minus keys
   routes:
     - {prefix: /v1/generate, cost: 5}
   anonymous: free
+  autopilot: {stormBlocks: 20, stormWindow: 10s, banFor: 5m}   # optional; these are the defaults
 ---
 apiVersion: limitplane.dev/v1alpha1
 kind: Tenant
@@ -74,7 +75,7 @@ tenant.limitplane.dev/acme   acme   pro    True    Active   45     2m
 | `monthlyUsed` | Best effort, read by the leader. It is shared only with the Redis backend; in memory each replica counts its own traffic. |
 
 Events, from the leader only: `PolicyApplied`, `PolicyInvalid` (on the policy), `QuotaAlert` at 80% of a
-monthly cap (on the Tenant) and `TenantBanned` when autopilot bans a client (on the policy, because bans
+monthly cap (on the Tenant) and `TenantBanned` when a client is banned (on the policy, because bans
 are per client address, not per Tenant).
 
 `/api/stats` reports `kube` and `leader`.
@@ -115,16 +116,25 @@ up to date stays quiet.
 `limitplane.dev/replica=true` and annotated with the policy generation it serves, renewed every 5s.
 The leader counts the fresh ones. With `POD_UID` set, the Lease is owned by the pod and is deleted with it.
 
+**Fallback budget.** Every replica also counts the fresh heartbeat Leases (any generation) on each resync.
+If Redis goes down, each replica limits locally on 1/n of every rate and burst, so n replicas together
+still admit about one budget instead of n. The count is taken while Redis is still up, from the API
+server, which doesn't depend on Redis.
+
 ## Behaviour to know
 
 - At startup the server waits for the first sync (up to 20s) before listening, so the first requests
   already see the CRD policy. Until then, or if the named policy doesn't exist, it serves the startup
   policy (`--config`, or the built-in demo policy). File watching and SIGHUP are off in kube mode.
 - Deleting the RateLimitPolicy keeps the last applied policy rather than dropping to defaults.
-- `spec.autopilot` (`stormBlocks`, `stormWindow`, `banFor`) is accepted by the schema but **not applied
-  yet**: autopilot settings are still fixed in `server.New`.
-- Ban and quota-alert Events come from the leader's own traffic only, read off the dashboard event
-  stream, so they are best effort.
+- `spec.autopilot` (`stormBlocks`, `stormWindow`, `banFor`) is applied to every replica's autopilot when
+  it changes. Absent fields keep the defaults (20 blocks in 10s, ban for 5m); `stormBlocks: 0` turns
+  storm bans off. A value autopilot can't use (a zero window or ban with blocks set) makes the policy
+  `Applied=False, Invalid`, like any other spec error, and the last good rules stay.
+- Bans themselves are shared through Redis, so a ban decided on any replica holds on all of them. The
+  `TenantBanned` and `QuotaAlert` Events come through `server.Config.OnBan`/`OnAlert` hooks on the
+  replica that decided them, and only the leader sends Events, so a ban decided on a follower has no
+  Event. They are best effort.
 
 ## Debugging
 

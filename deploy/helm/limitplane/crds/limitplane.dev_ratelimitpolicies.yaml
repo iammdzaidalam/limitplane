@@ -72,7 +72,7 @@ spec:
                   description: Tier for requests without a known API key, limited per client IP.
                 autopilot:
                   type: object
-                  description: Accepted and validated by the schema; not applied yet (see docs/OPERATOR.md).
+                  description: Storm-ban rule for autopilot, applied at runtime. Absent fields keep the defaults (20 blocks in 10s, ban for 5m).
                   properties:
                     stormBlocks: {type: integer, minimum: 0}
                     stormWindow: {type: string, pattern: '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'}

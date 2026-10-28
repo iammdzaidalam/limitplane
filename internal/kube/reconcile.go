@@ -3,14 +3,17 @@ package kube
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/iammdzaidalam/limitplane/internal/autopilot"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
@@ -31,6 +34,8 @@ type Controller struct {
 	Owner  *OwnerReference                                             // our pod, so the heartbeat Lease is garbage collected; may be nil
 	Usage  func(ctx context.Context, tenant string, limit int64) int64 // monthly usage for Tenant status; may be nil
 	Resync time.Duration                                               // status refresh and heartbeat period
+	// OnRules gets spec.autopilot (defaults filled in) whenever the applied value changes; may be nil.
+	OnRules func(autopilot.Rules)
 
 	policies *Cache[RateLimitPolicy]
 	tenants  *Cache[Tenant]
@@ -44,7 +49,14 @@ type Controller struct {
 	missing  bool
 	beatGen  int64
 	lastBeat time.Time
+	rules    *autopilot.Rules // last value given to OnRules
+
+	live atomic.Int64 // fresh replica heartbeats, any generation
 }
+
+// Replicas is how many replicas heartbeated recently, at least 1. Every replica counts them on each
+// resync, so a Redis outage can split the fallback budget without asking anyone.
+func (k *Controller) Replicas() int { return int(max(k.live.Load(), 1)) }
 
 func NewController(c *Client, store *policy.Store, policyName, id string, isLeader func() bool) *Controller {
 	k := &Controller{c: c, store: store, policyName: policyName, id: id, isLeader: isLeader,
@@ -98,10 +110,11 @@ func (k *Controller) reconcile(ctx context.Context, now time.Time) {
 	}
 
 	var cfg policy.Config
+	var rules autopilot.Rules
 	var applyErr error
 	conds := map[string]Condition{}
 	if found {
-		cfg, conds, applyErr = build(pol, tenants, k.secrets.Items())
+		cfg, rules, conds, applyErr = build(pol, tenants, k.secrets.Items())
 		// Compare with the live store, not our last write, so a dashboard PUT /api/policy is undone too:
 		// in kube mode the CR is the source of truth.
 		if applyErr == nil && !reflect.DeepEqual(cfg, k.store.Config()) {
@@ -111,6 +124,10 @@ func (k *Controller) reconcile(ctx context.Context, now time.Time) {
 		}
 		if applyErr == nil {
 			k.applied = pol.Metadata.Generation
+			if k.OnRules != nil && (k.rules == nil || *k.rules != rules) {
+				k.rules = &rules
+				k.OnRules(rules)
+			}
 		} else if k.rejected != pol.Metadata.Generation {
 			k.rejected = pol.Metadata.Generation
 			log.Printf("kube: %s generation %d rejected, keeping the current policy: %s", k.policyName, k.rejected, oneLine(applyErr))
@@ -132,6 +149,9 @@ func (k *Controller) reconcile(ctx context.Context, now time.Time) {
 			log.Printf("kube: heartbeat: %v", err)
 		} else {
 			k.beatGen, k.lastBeat = k.applied, now
+			if n, err := k.c.countReplicas(ctx, -1, 15*time.Second, now); err == nil {
+				k.live.Store(int64(n))
+			}
 		}
 	}
 	if k.isLeader() {
@@ -142,16 +162,24 @@ func (k *Controller) reconcile(ctx context.Context, now time.Time) {
 // build turns the policy spec plus every usable Tenant into a validated policy.Config.
 // Tenants that can't be used (missing Secret, unknown tier, ...) are left out and get Ready=False,
 // so one bad Tenant never blocks the policy.
-func build(pol RateLimitPolicy, tenants map[string]Tenant, secrets map[string]Secret) (policy.Config, map[string]Condition, error) {
+func build(pol RateLimitPolicy, tenants map[string]Tenant, secrets map[string]Secret) (policy.Config, autopilot.Rules, map[string]Condition, error) {
 	conds := map[string]Condition{}
+	rules := autopilot.DefaultRules
 	var spec map[string]json.RawMessage
 	if err := json.Unmarshal(pol.Spec, &spec); err != nil {
-		return policy.Config{}, conds, fmt.Errorf("policy: spec: %w", err)
+		return policy.Config{}, rules, conds, fmt.Errorf("policy: spec: %w", err)
 	}
 	if spec == nil {
 		spec = map[string]json.RawMessage{}
 	}
-	delete(spec, "autopilot") // part of the CRD, not of the policy file format (see docs/OPERATOR.md)
+	// autopilot is part of the CRD, not of the policy file format: it goes to the Pilot instead.
+	var rulesErr error
+	if raw, ok := spec["autopilot"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			rulesErr = fmt.Errorf("policy: autopilot: %w", err)
+		}
+		delete(spec, "autopilot")
+	}
 	var tiers map[string]json.RawMessage
 	json.Unmarshal(spec["tiers"], &tiers)
 
@@ -172,14 +200,14 @@ func build(pol RateLimitPolicy, tenants map[string]Tenant, secrets map[string]Se
 	spec["keys"], _ = json.Marshal(keys)
 	b, _ := json.Marshal(spec)
 	cfg, err := policy.Parse(b) // the same parse + validation as the policy file
-	if err != nil {
+	if err = errors.Join(err, rulesErr); err != nil {
 		for name, c := range conds {
 			if c.Status == "True" {
 				conds[name] = notReady("PolicyInvalid", "RateLimitPolicy "+pol.Metadata.Name+" is invalid")
 			}
 		}
 	}
-	return cfg, conds, err
+	return cfg, rules, conds, err
 }
 
 func apiKey(t TenantSpec, tiers map[string]json.RawMessage, secrets map[string]Secret) (key, reason, msg string) {

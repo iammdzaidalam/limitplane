@@ -222,3 +222,27 @@ func TestCancel(t *testing.T) {
 		t.Fatalf("want canceled, got %v", err)
 	}
 }
+
+// New only parses, so a gateway can start before Redis does; commands then dial on demand.
+func TestNewDoesNotConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // nothing listening yet
+	c, err := New(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Do(context.Background(), "PING"); err == nil {
+		t.Fatal("PING with no server must fail")
+	}
+	if _, err := Dial(addr); err == nil {
+		t.Fatal("Dial still checks the server")
+	}
+	if _, err := New("http://x"); err == nil {
+		t.Fatal("bad scheme must fail at New")
+	}
+}

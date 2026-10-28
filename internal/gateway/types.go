@@ -27,8 +27,3 @@ type Decision struct {
 	RetryAfter time.Duration `json:"retryAfter"`
 	Degraded   bool          `json:"degraded,omitempty"` // shared backend down, local fallback used
 }
-
-// Bans is how the gateway asks whether a client is cooling down.
-type Bans interface {
-	Banned(client string) (until time.Time, ok bool)
-}

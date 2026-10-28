@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -46,6 +47,7 @@ func run() error {
 	failClosed := flag.Bool("fail-closed", false, "return 503 when the shared backend is down instead of falling back to local limits")
 	kubeMode := flag.Bool("kube", os.Getenv("LIMITPLANE_KUBE") == "1", "in-cluster operator mode: policy and tenants come from CRDs")
 	kubePolicy := flag.String("kube-policy", "default", "RateLimitPolicy to apply (--kube)")
+	replicas := flag.Int("replicas", envInt("LIMITPLANE_REPLICAS", 1), "replicas sharing Redis; while it is down each falls back to 1/n of the budget (--kube counts them itself)")
 	flag.Parse()
 
 	cfg, err := loadConfig(*cfgPath)
@@ -59,30 +61,32 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "limitplane: generated admin key (not stored): %s\n", *adminKey)
 	}
 
-	var lim limiter.Limiter = limiter.NewLocal()
-	var quota limiter.Quota = limiter.NewLocalQuota()
-	backend := "memory"
-	if *redisURL != "" {
-		c, err := redisx.Dial(*redisURL)
-		if err != nil {
-			return fmt.Errorf("redis: %w", err)
+	var op *operator
+	limits, red, err := newBackend(*redisURL, *failClosed, func() int {
+		if op != nil {
+			return op.ctl.Replicas()
 		}
-		defer c.Close()
-		r := limiter.NewRedis(c)
-		lim, quota, backend = limiter.NewFallback(r, lim), limiter.NewFallbackQuota(r, quota), "redis"
+		return *replicas
+	})
+	if err != nil {
+		return err
+	}
+	backend := "memory"
+	if red != nil {
+		backend = "redis"
+		defer red.Close()
 	}
 
 	store := policy.NewStore(cfg)
 	sc := server.Config{
-		Policy: store, Limiter: lim, Quota: quota, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
+		Policy: store, Limits: limits, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
 		TrustProxy: *trust, FailClosed: *failClosed, Dashboard: web.FS, Kube: *kubeMode,
 	}
-	var op *operator
 	if *kubeMode {
-		if op, err = newOperator(store, quota, *kubePolicy); err != nil {
+		if op, err = newOperator(store, limits, *kubePolicy); err != nil {
 			return err
 		}
-		sc.Leader = op.elector.IsLeader
+		sc.Leader, sc.OnBan, sc.OnAlert = op.elector.IsLeader, op.banned, op.alert
 	}
 	srv := server.New(sc)
 
@@ -103,9 +107,12 @@ func run() error {
 	hubCtx, stopHub := context.WithCancel(context.Background())
 	defer stopHub()
 	go srv.Run(hubCtx)
+	if red != nil {
+		go syncRedis(ctx, red, *failClosed)
+	}
 	if op != nil {
 		// --config, if given, is only the startup policy: the CRDs own it from here.
-		op.start(ctx, srv.Hub)
+		op.start(ctx, srv.Pilot)
 		defer op.stop()
 	} else if *cfgPath != "" {
 		go store.Watch(ctx, *cfgPath, 2*time.Second, func(err error) { log.Printf("config reload: %v", err) })
@@ -142,6 +149,58 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// newBackend is in-process limits, or Redis behind a fallback to them. Only a bad URL is an error:
+// a Redis that is down (or whose DNS name doesn't resolve yet) is retried, and until then the
+// gateway serves degraded from local limits, or 503s with failClosed.
+func newBackend(redisURL string, failClosed bool, replicas func() int) (limiter.Backend, *limiter.Redis, error) {
+	mem := limiter.NewMemory()
+	if redisURL == "" {
+		return mem, nil, nil
+	}
+	c, err := redisx.New(redisURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("redis: %w", err)
+	}
+	red := limiter.NewRedis(c, mem.BanList)
+	if failClosed { // fail-closed has to see Redis errors to return 503, so no fallback
+		return red, red, nil
+	}
+	return limiter.NewFallback(red, mem, replicas), red, nil
+}
+
+// syncRedis reads the ban list back every 2s (spreading CIDR bans, keeping a copy for outages)
+// and logs when Redis comes and goes, including at startup.
+func syncRedis(ctx context.Context, r *limiter.Redis, failClosed bool) {
+	mode := "limiting locally, decisions marked degraded"
+	if failClosed {
+		mode = "returning 503 (--fail-closed)"
+	}
+	up := true
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := r.Bans(pctx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if (err == nil) != up {
+			up = err == nil
+			if up {
+				log.Print("redis: reachable, limits are shared again")
+			} else {
+				log.Printf("redis: unreachable (%v), %s; retrying every 2s", err, mode)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func loadConfig(path string) (policy.Config, error) {
@@ -183,6 +242,13 @@ func proxy(u *url.URL, trust bool) http.Handler {
 		}
 		pr.SetXForwarded()
 	}}
+}
+
+func envInt(k string, def int) int {
+	if n, err := strconv.Atoi(os.Getenv(k)); err == nil {
+		return n
+	}
+	return def
 }
 
 func env(k, def string) string {

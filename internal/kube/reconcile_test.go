@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iammdzaidalam/limitplane/internal/autopilot"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
@@ -153,14 +154,16 @@ func TestOnlyLeaderWritesStatus(t *testing.T) {
 	f.seed(secretsPath, secretObj("acme-key", "k-acme"))
 	var leadA, leadB atomic.Bool
 	leadA.Store(true)
-	_, storeA := startController(t, clientFor(srv, "a"), "a", &leadA)
-	_, storeB := startController(t, clientFor(srv, "b"), "b", &leadB)
+	ka, storeA := startController(t, clientFor(srv, "a"), "a", &leadA)
+	kb, storeB := startController(t, clientFor(srv, "b"), "b", &leadB)
 
 	// Both replicas serve the policy; the leader reports both of them.
 	waitFor(t, "both applied", func() bool {
 		return storeA.Resolve("k-acme", "/").Tenant == "acme" && storeB.Resolve("k-acme", "/").Tenant == "acme"
 	})
 	waitFor(t, "activeReplicas 2", func() bool { return status(f.get(policiesPath, "default"), "activeReplicas") == 2 })
+	// Every replica, leader or not, knows the count (it splits the fallback budget).
+	waitFor(t, "both count 2 replicas", func() bool { return ka.Replicas() == 2 && kb.Replicas() == 2 })
 	if n := len(f.requests("b PATCH")) + len(f.requests("b POST "+eventsPath)); n != 0 {
 		t.Fatalf("follower wrote %d status patches/events", n)
 	}
@@ -176,5 +179,52 @@ func TestOnlyLeaderWritesStatus(t *testing.T) {
 	})
 	if n := len(f.requests("a PATCH")); n != aWrites {
 		t.Fatalf("old leader kept writing: %d new patches", n-aWrites)
+	}
+}
+
+func TestAutopilotRules(t *testing.T) {
+	f, srv := newFake(t)
+	f.seed(policiesPath, policyObj("default", 3)) // stormBlocks 20, 10s, 5m
+	var leader atomic.Bool
+	leader.Store(true)
+	got := make(chan autopilot.Rules, 10)
+	store := startStore()
+	k := NewController(clientFor(srv, "a"), store, "default", "a", leader.Load)
+	k.Resync = 20 * time.Millisecond
+	k.OnRules = func(r autopilot.Rules) { got <- r }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go k.Run(ctx)
+
+	next := func() autopilot.Rules {
+		select {
+		case r := <-got:
+			return r
+		case <-time.After(5 * time.Second):
+			t.Fatal("no OnRules call")
+		}
+		return autopilot.Rules{}
+	}
+	if r := next(); r != autopilot.DefaultRules {
+		t.Fatalf("first rules %+v", r)
+	}
+	p := policyObj("default", 3)
+	p["spec"].(obj)["autopilot"] = obj{"stormBlocks": 4, "banFor": "1h"}
+	f.seed(policiesPath, p)
+	if r := next(); r != (autopilot.Rules{StormBlocks: 4, StormWindow: 10 * time.Second, BanFor: time.Hour}) {
+		t.Fatalf("edited rules %+v", r)
+	}
+
+	// Rules the Pilot can't use make the policy Invalid, and the last good rules stay.
+	p["spec"].(obj)["autopilot"] = obj{"stormBlocks": 4, "stormWindow": "0s"}
+	f.seed(policiesPath, p)
+	waitFor(t, "Applied=False", func() bool {
+		c, msg := condition(f.get(policiesPath, "default"))
+		return c == "False/Invalid" && strings.Contains(msg, "autopilot")
+	})
+	select {
+	case r := <-got:
+		t.Fatalf("invalid rules delivered: %+v", r)
+	default:
 	}
 }

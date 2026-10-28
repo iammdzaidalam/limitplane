@@ -131,30 +131,99 @@ func TestRateJSON(t *testing.T) {
 	}
 }
 
-func TestLocalQuota(t *testing.T) {
+func memAt(c *clock) *Memory { m := NewMemory(); m.now = c.now; return m }
+
+func mustCheck(t *testing.T, m Meter, q Request) Result {
+	t.Helper()
+	res, err := m.Check(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestLocalMonthly(t *testing.T) {
 	c := newClock(time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC))
-	q := NewLocalQuota()
-	q.now = c.now
-	k := MonthKey("acme", c.now())
+	m := memAt(c)
+	q := Request{Client: "1.2.3.4", Key: "acme", Rate: Rate{Limit: 1000, Period: time.Second, Burst: 1000}, Month: 10}
 	for i, want := range []struct {
 		cost, used int64
-		ok         bool
-	}{{4, 4, true}, {4, 8, true}, {4, 8, false}, {2, 10, true}, {1, 10, false}} {
-		used, ok, _ := q.Spend(ctx, k, 10, want.cost)
-		if used != want.used || ok != want.ok {
-			t.Fatalf("step %d: used %d ok %v", i, used, ok)
+		reason     Reason
+	}{{4, 4, OK}, {4, 8, OK}, {4, 8, Monthly}, {2, 10, OK}, {1, 10, Monthly}} {
+		q.Cost = want.cost
+		res := mustCheck(t, m, q)
+		if res.Used != want.used || res.Reason != want.reason || res.Allowed != (want.reason == OK) {
+			t.Fatalf("step %d: %+v", i, res)
 		}
 	}
-	if used, ok, _ := q.Spend(ctx, "free", 0, 1e6); !ok || used != 1e6 {
-		t.Fatal("limit 0 means uncapped")
+	if n, _ := m.Used(ctx, "acme"); n != 10 {
+		t.Fatalf("Used %d", n)
+	}
+	q.Month, q.Cost = 0, 100
+	if res := mustCheck(t, m, q); !res.Allowed {
+		t.Fatal("month 0 means uncapped")
 	}
 	c.add(2 * time.Hour) // February
-	k2 := MonthKey("acme", c.now())
-	if used, ok, _ := q.Spend(ctx, k2, 10, 1); !ok || used != 1 {
-		t.Fatalf("new month should start at 0: %d", used)
+	q.Month, q.Cost = 10, 1
+	if res := mustCheck(t, m, q); !res.Allowed || res.Used != 1 {
+		t.Fatalf("new month should start at 0: %+v", res)
 	}
-	if len(q.used) != 1 {
-		t.Fatalf("old months not cleaned: %v", q.used)
+}
+
+// Nothing is spent unless every check passes.
+func TestCheckSpendsOnlyWhenAllPass(t *testing.T) {
+	m := memAt(newClock(time.Unix(1_700_000_000, 0))) // frozen: no refill
+	q := Request{Key: "acme", Rate: Rate{Limit: 1, Period: time.Hour, Burst: 10}, Cost: 4, Month: 6}
+	if res := mustCheck(t, m, q); !res.Allowed || res.Used != 4 || res.Remaining != 6 {
+		t.Fatalf("first: %+v", res)
+	}
+	// Monthly reject (4+4 > 6) must not use burst: 6 units of burst are still there.
+	if res := mustCheck(t, m, q); res.Reason != Monthly {
+		t.Fatalf("want monthly: %+v", res)
+	}
+	q.Cost, q.Month = 6, 100
+	if res := mustCheck(t, m, q); !res.Allowed || res.Remaining != 0 || res.Used != 10 {
+		t.Fatalf("monthly reject spent burst: %+v", res)
+	}
+	// Burst reject must not bill the month.
+	q.Cost = 1
+	if res := mustCheck(t, m, q); res.Reason != Burst || res.Used != 10 {
+		t.Fatalf("want burst: %+v", res)
+	}
+	if n, _ := m.Used(ctx, "acme"); n != 10 {
+		t.Fatalf("burst reject billed the month: %d", n)
+	}
+}
+
+func TestBanList(t *testing.T) {
+	l := NewBanList()
+	now := time.Now()
+	for _, b := range []Ban{
+		{Client: "192.0.2.1", Until: now.Add(time.Hour)},
+		{Client: "10.99.0.3/30", Until: now.Add(time.Hour)}, // stored masked: 10.99.0.0/30
+		{Client: "2001:db8::/32", Until: now.Add(time.Hour)},
+		{Client: "198.51.100.9/32", Until: now.Add(time.Hour)}, // single IP: exact
+		{Client: "203.0.113.0/24", Until: now.Add(-time.Second)},
+	} {
+		l.Ban(ctx, b)
+	}
+	for client, want := range map[string]bool{
+		"192.0.2.1": true, "192.0.2.2": false,
+		"10.99.0.0": true, "10.99.0.3": true, "10.99.0.4": false, "::ffff:10.99.0.1": true,
+		"2001:db8:1::7": true, "2001:db9::1": false,
+		"198.51.100.9": true, "203.0.113.5": false, "not-an-ip": false,
+	} {
+		if _, got := l.Banned(client, now); got != want {
+			t.Errorf("%s: banned %v, want %v", client, got, want)
+		}
+	}
+	bs, _ := l.Bans(ctx)
+	if len(bs) != 4 || l.snap.Load().byClient["10.99.0.0/30"].Client != "10.99.0.0/30" || len(l.snap.Load().byClient) != 4 {
+		t.Fatalf("bans %+v", bs)
+	}
+	l.Unban(ctx, "10.99.0.1/30") // any spelling of the same prefix
+	if _, ok := l.Banned("10.99.0.1", now); ok {
+		t.Fatal("unban by prefix failed")
 	}
 }
 
@@ -166,14 +235,18 @@ func (f *failing) Allow(context.Context, string, Rate, int64) (Result, error) {
 	f.calls.Add(1)
 	return Result{}, errDown
 }
-func (f *failing) Spend(context.Context, string, int64, int64) (int64, bool, error) {
+func (f *failing) Check(context.Context, Request) (Result, error) {
 	f.calls.Add(1)
-	return 0, false, errDown
+	return Result{}, errDown
 }
+func (f *failing) Used(context.Context, string) (int64, error) { return 0, errDown }
+func (f *failing) Ban(context.Context, Ban) error              { return errDown }
+func (f *failing) Unban(context.Context, string) error         { return errDown }
+func (f *failing) Bans(context.Context) ([]Ban, error)         { return nil, errDown }
 
 func TestFallback(t *testing.T) {
 	p := &failing{}
-	f := NewFallback(p, NewLocal())
+	f := NewFallback(p, NewMemory(), nil)
 	r := Rate{Limit: 1, Period: time.Second, Burst: 2}
 	for range 3 {
 		res, err := f.Allow(ctx, "k", r, 1)
@@ -192,14 +265,48 @@ func TestFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ok := NewFallback(NewLocal(), p)
-	if res, _ := ok.Allow(ctx, "k", r, 1); res.Degraded || !res.Allowed {
+	ok := NewFallback(NewMemory(), p, nil)
+	if res, _ := ok.Check(ctx, Request{Key: "k", Rate: r, Cost: 1, Month: 5}); res.Degraded || !res.Allowed || res.Used != 1 {
 		t.Fatalf("healthy primary: %+v", res)
 	}
 
-	fq := NewFallbackQuota(&failing{}, NewLocalQuota())
-	if used, ok, err := fq.Spend(ctx, "m", 5, 3); err != nil || !ok || used != 3 {
-		t.Fatalf("quota fallback: %d %v %v", used, ok, err)
+	// Bans, usage and checks all go to the backup while the primary is down.
+	f = NewFallback(&failing{}, NewMemory(), nil)
+	if err := f.Ban(ctx, Ban{Client: "10.0.0.0/8", Until: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := f.Check(ctx, Request{Client: "10.1.2.3", Key: "k", Rate: r, Cost: 1}); res.Reason != Banned || !res.Degraded {
+		t.Fatalf("backup ban: %+v", res)
+	}
+	if bs, err := f.Bans(ctx); err != nil || len(bs) != 1 {
+		t.Fatalf("backup bans %v %v", bs, err)
+	}
+}
+
+// While Redis is down each of n replicas gets 1/n of the budget, never below one request's cost.
+func TestFallbackSharesBudget(t *testing.T) {
+	r := Rate{Limit: 10, Period: time.Second, Burst: 30}
+	for _, c := range []struct {
+		n, cost   int64
+		burst     int64
+		perSecond float64
+	}{{1, 1, 30, 10}, {3, 1, 10, 10.0 / 3}, {4, 1, 7, 2.5}, {100, 5, 5, 0.1}} {
+		got := share(r, int(c.n), c.cost)
+		if got.Burst != c.burst || float64(got.Limit)/got.Period.Seconds() != c.perSecond {
+			t.Errorf("n=%d cost=%d: %+v", c.n, c.cost, got)
+		}
+	}
+
+	n := 3
+	f := NewFallback(&failing{}, memAt(newClock(time.Unix(1_700_000_000, 0))), func() int { return n })
+	admitted := 0
+	for range 50 {
+		if res, _ := f.Check(ctx, Request{Key: "k", Rate: r, Cost: 1}); res.Allowed {
+			admitted++
+		}
+	}
+	if admitted != 10 { // burst 30 / 3 replicas
+		t.Fatalf("admitted %d, want 10", admitted)
 	}
 }
 
@@ -243,4 +350,36 @@ func BenchmarkParallel512Keys(b *testing.B) {
 			i++
 		}
 	})
+}
+
+// The gateway's local path: ban lookup, monthly cap and GCRA under one shard lock.
+func BenchmarkMemoryCheck(b *testing.B) {
+	m, ks := NewMemory(), keys512()
+	m.Ban(ctx, Ban{Client: "10.0.0.0/8", Until: time.Now().Add(time.Hour)}) // one CIDR length to scan
+	q := Request{Client: "203.0.113.7", Rate: Rate{Limit: 1e9, Period: time.Second, Burst: 1e9}, Cost: 1, Month: 1 << 60}
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		q.Key = ks[i&511]
+		m.Check(ctx, q)
+		i++
+	}
+}
+
+func BenchmarkBanned(b *testing.B) {
+	l, now := NewBanList(), time.Now()
+	for i := range 1000 {
+		l.Ban(ctx, Ban{Client: "198.51.100." + strconv.Itoa(i%256), Until: now.Add(time.Hour)})
+	}
+	for _, c := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.0.2.0/24", "2001:db8::/32"} {
+		l.Ban(ctx, Ban{Client: c, Until: now.Add(time.Hour)})
+	}
+	for _, c := range []struct{ name, ip string }{{"exact", "198.51.100.7"}, {"miss", "203.0.113.7"}} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				l.Banned(c.ip, now)
+			}
+		})
+	}
 }

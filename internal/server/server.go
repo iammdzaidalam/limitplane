@@ -32,8 +32,7 @@ var loginRate = limiter.Rate{Limit: 5, Period: time.Minute, Burst: 5}
 
 type Config struct {
 	Policy     *policy.Store
-	Limiter    limiter.Limiter
-	Quota      limiter.Quota
+	Limits     limiter.Backend // burst, monthly and bans: memory, or Redis behind a fallback
 	AdminKey   string
 	MetricsKey string // empty: /metrics is public
 	Backend    string // "memory" or "redis"
@@ -42,6 +41,9 @@ type Config struct {
 	Dashboard  fs.FS       // nil disables GET /
 	Kube       bool        // policy comes from CRDs (--kube)
 	Leader     func() bool // nil: not running leader election
+	// Hooks for autopilot bans and 80% quota alerts. Called on the request or hub goroutine: don't block.
+	OnBan   func(autopilot.Ban)
+	OnAlert func(autopilot.Alert)
 }
 
 type Server struct {
@@ -64,13 +66,27 @@ func New(c Config) *Server {
 		return m
 	})
 	s.Pilot = autopilot.New(autopilot.Config{
-		StormBlocks: 20, StormWindow: 10 * time.Second, BanFor: 5 * time.Minute,
-		OnBan:   func(b autopilot.Ban) { s.Hub.Publish("ban", b) },
-		OnAlert: func(a autopilot.Alert) { s.Hub.Publish("alert", a) },
+		Rules: autopilot.DefaultRules, Store: c.Limits,
+		OnBan: func(b autopilot.Ban) {
+			s.Hub.Publish("ban", b)
+			if c.OnBan != nil {
+				c.OnBan(b)
+			}
+		},
+		OnAlert: func(a autopilot.Alert) {
+			s.Hub.Publish("alert", a)
+			if c.OnAlert != nil {
+				c.OnAlert(a)
+			}
+		},
 	})
 	s.Gateway = gateway.New(gateway.Config{
-		Policy: c.Policy, Limiter: c.Limiter, Quota: c.Quota, Bans: s.Pilot,
-		OnDecision: s.Hub.OnDecision, OnQuota: s.Pilot.Usage, TrustProxy: c.TrustProxy, FailClosed: c.FailClosed,
+		Policy: c.Policy, Meter: c.Limits, OnDecision: s.Hub.OnDecision,
+		OnQuota: func(tenant string, used, limit int64) {
+			s.Hub.Quota(tenant, used, limit)
+			s.Pilot.Usage(tenant, used, limit)
+		},
+		TrustProxy: c.TrustProxy, FailClosed: c.FailClosed,
 	})
 	return s
 }
@@ -105,10 +121,21 @@ func (s *Server) admin() http.Handler {
 	m.Handle("GET /api/events", s.auth(http.HandlerFunc(s.events), true))
 	api("GET /api/audit", s.audit)
 	api("GET /api/clients", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.Pilot.Clients()) })
-	api("GET /api/bans", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.Pilot.Bans()) })
+	api("GET /api/bans", func(w http.ResponseWriter, r *http.Request) {
+		bans, err := s.Pilot.Bans(r.Context())
+		if err != nil {
+			unavailable(w, err)
+			return
+		}
+		writeJSON(w, 200, bans)
+	})
 	api("POST /api/bans", s.ban)
-	api("DELETE /api/bans/{client}", func(w http.ResponseWriter, r *http.Request) {
-		s.Pilot.Unban(r.PathValue("client"))
+	// {client...}: a CIDR ban has a slash in it.
+	api("DELETE /api/bans/{client...}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.Pilot.Unban(r.Context(), r.PathValue("client")); err != nil {
+			unavailable(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	api("GET /api/policy", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.cfg.Policy.Config()) })
@@ -182,7 +209,7 @@ func equal(a, b string) bool {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := gateway.ClientIP(r, s.cfg.TrustProxy)
-	res, err := s.cfg.Limiter.Allow(r.Context(), "login:"+ip, loginRate, 1)
+	res, err := s.cfg.Limits.Allow(r.Context(), "login:"+ip, loginRate, 1)
 	if err == nil && !res.Allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(res.RetryAfter.Seconds()))))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
@@ -214,8 +241,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		t := tenantStats{Tenant: id, Tier: tier, Allowed: c.Allowed, Blocked: c.Blocked}
 		if lim := cfg.Tiers[tier].Monthly; monthly && lim > 0 {
 			t.MonthlyLimit = lim
-			// Spending 0 reads the current usage from whichever backend is shared.
-			if used, _, err := s.cfg.Quota.Spend(r.Context(), limiter.MonthKey(id, now), lim, 0); err == nil {
+			if used, err := s.cfg.Limits.Used(r.Context(), id); err == nil {
 				t.MonthlyUsed = used
 			}
 		}
@@ -254,7 +280,10 @@ func (s *Server) ban(w http.ResponseWriter, r *http.Request) {
 	if b.Reason == "" {
 		b.Reason = "manual"
 	}
-	s.Pilot.Ban(b.Client, time.Duration(b.Minutes)*time.Minute, b.Reason)
+	if err := s.Pilot.Ban(r.Context(), b.Client, time.Duration(b.Minutes)*time.Minute, b.Reason); err != nil {
+		unavailable(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -307,9 +336,18 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	s.Hub.writeMetrics(w, len(s.Pilot.Bans()))
+	bans, err := s.Pilot.Bans(r.Context())
+	n := len(bans)
+	if err != nil {
+		n = -1 // unknown: leave the gauge out rather than report 0
+	}
+	s.Hub.writeMetrics(w, n, time.Now())
+}
+
+func unavailable(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

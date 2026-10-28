@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/iammdzaidalam/limitplane/internal/autopilot"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
@@ -30,7 +32,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	s := New(Config{
-		Policy: policy.NewStore(cfg), Limiter: limiter.NewLocal(), Quota: limiter.NewLocalQuota(),
+		Policy: policy.NewStore(cfg), Limits: limiter.NewMemory(),
 		AdminKey: "admin-key", Backend: "memory",
 		Dashboard: fstest.MapFS{"index.html": {Data: []byte("<h1>dash</h1>")}},
 	})
@@ -162,9 +164,74 @@ func TestAuthAndAdmin(t *testing.T) {
 	if r := do(t, "DELETE", ts.URL+"/api/bans/1.2.3.4", tok, ""); r.StatusCode != 204 {
 		t.Fatalf("unban: %d", r.StatusCode)
 	}
+	if b, _ := io.ReadAll(do(t, "GET", ts.URL+"/api/bans", tok, "").Body); strings.TrimSpace(string(b)) != "[]" {
+		t.Fatalf("no bans must be [], not null: %s", b)
+	}
 	d := do(t, "GET", ts.URL+"/", "", "")
 	if d.StatusCode != 200 || d.Header.Get("Content-Security-Policy") == "" || d.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("dashboard %d %v", d.StatusCode, d.Header)
+	}
+}
+
+// /api/bans keeps the shape the XDP loader parses: [{"client","until","reason"}]. CIDRs work end to end.
+func TestCIDRBan(t *testing.T) {
+	var hooked []autopilot.Ban
+	cfg, _ := policy.Parse([]byte(testPolicy))
+	s := New(Config{Policy: policy.NewStore(cfg), Limits: limiter.NewMemory(), AdminKey: "admin-key",
+		OnBan: func(b autopilot.Ban) { hooked = append(hooked, b) }})
+	ts := httptest.NewServer(s.Handler(nil))
+	defer ts.Close()
+	tok := login(t, ts.URL)
+	if r := do(t, "POST", ts.URL+"/api/bans", tok, `{"client":"127.0.0.0/8","minutes":5}`); r.StatusCode != 204 {
+		t.Fatalf("ban: %d", r.StatusCode)
+	}
+	if len(hooked) != 1 || hooked[0].Client != "127.0.0.0/8" {
+		t.Fatalf("OnBan %v", hooked)
+	}
+	if r := do(t, "GET", ts.URL+"/v1/ping", "", ""); r.StatusCode != 429 { // httptest is 127.0.0.1
+		t.Fatalf("client in banned prefix: %d", r.StatusCode)
+	}
+	b, _ := io.ReadAll(do(t, "GET", ts.URL+"/api/bans", tok, "").Body)
+	var bans []struct {
+		Client string    `json:"client"`
+		Until  time.Time `json:"until"`
+		Reason string    `json:"reason"`
+	}
+	if err := json.Unmarshal(b, &bans); err != nil || len(bans) != 1 || bans[0].Client != "127.0.0.0/8" ||
+		bans[0].Reason != "manual" || time.Until(bans[0].Until) < 4*time.Minute {
+		t.Fatalf("bans %s %v", b, err)
+	}
+	if r := do(t, "DELETE", ts.URL+"/api/bans/127.0.0.0/8", tok, ""); r.StatusCode != 204 {
+		t.Fatalf("unban with a slash: %d", r.StatusCode)
+	}
+	if r := do(t, "GET", ts.URL+"/v1/ping", "", ""); r.StatusCode != 200 {
+		t.Fatalf("after unban: %d", r.StatusCode)
+	}
+}
+
+func TestOnAlertHook(t *testing.T) {
+	cfg, _ := policy.Parse([]byte(strings.Replace(testPolicy, `"monthly": 1000`, `"monthly": 5`, 1)))
+	alerts := make(chan autopilot.Alert, 1)
+	s := New(Config{Policy: policy.NewStore(cfg), Limits: limiter.NewMemory(), AdminKey: "a",
+		OnAlert: func(a autopilot.Alert) { alerts <- a }})
+	ts := httptest.NewServer(s.Handler(nil))
+	defer ts.Close()
+	for range 4 {
+		req, _ := http.NewRequest("GET", ts.URL+"/v1/ping", nil)
+		req.Header.Set("X-Api-Key", "free-key")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+	}
+	select {
+	case a := <-alerts:
+		if a.Tenant != "acme" || a.Used != 4 || a.Limit != 5 {
+			t.Fatalf("alert %+v", a)
+		}
+	default:
+		t.Fatal("no alert at 4 of 5")
 	}
 }
 
@@ -211,7 +278,7 @@ func TestProxyMount(t *testing.T) {
 
 func TestMetricsKey(t *testing.T) {
 	cfg, _ := policy.Parse([]byte(testPolicy))
-	s := New(Config{Policy: policy.NewStore(cfg), Limiter: limiter.NewLocal(), Quota: limiter.NewLocalQuota(), AdminKey: "a", MetricsKey: "scrape"})
+	s := New(Config{Policy: policy.NewStore(cfg), Limits: limiter.NewMemory(), AdminKey: "a", MetricsKey: "scrape"})
 	ts := httptest.NewServer(s.Handler(nil))
 	defer ts.Close()
 	for tok, want := range map[string]int{"": 401, "nope": 401, "scrape": 200} {
