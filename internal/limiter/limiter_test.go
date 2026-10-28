@@ -204,21 +204,26 @@ func TestBanList(t *testing.T) {
 		{Client: "2001:db8::/32", Until: now.Add(time.Hour)},
 		{Client: "198.51.100.9/32", Until: now.Add(time.Hour)}, // single IP: exact
 		{Client: "203.0.113.0/24", Until: now.Add(-time.Second)},
+		{Client: "::ffff:172.16.5.0/120", Until: now.Add(time.Hour)}, // mapped: becomes 172.16.5.0/24
 	} {
 		l.Ban(ctx, b)
+	}
+	if err := l.Ban(ctx, Ban{Client: "::ffff:0.0.0.0/95", Until: now.Add(time.Hour)}); !errors.Is(err, ErrBadBan) {
+		t.Fatalf("mapped prefix under /96 must be refused: %v", err)
 	}
 	for client, want := range map[string]bool{
 		"192.0.2.1": true, "192.0.2.2": false,
 		"10.99.0.0": true, "10.99.0.3": true, "10.99.0.4": false, "::ffff:10.99.0.1": true,
 		"2001:db8:1::7": true, "2001:db9::1": false,
 		"198.51.100.9": true, "203.0.113.5": false, "not-an-ip": false,
+		"172.16.5.200": true, "::ffff:172.16.5.1": true, "172.16.6.1": false,
 	} {
 		if _, got := l.Banned(client, now); got != want {
 			t.Errorf("%s: banned %v, want %v", client, got, want)
 		}
 	}
 	bs, _ := l.Bans(ctx)
-	if len(bs) != 4 || l.snap.Load().byClient["10.99.0.0/30"].Client != "10.99.0.0/30" || len(l.snap.Load().byClient) != 4 {
+	if len(bs) != 5 || l.snap.Load().byClient["10.99.0.0/30"].Client != "10.99.0.0/30" || l.snap.Load().byClient["172.16.5.0/24"].Client == "" {
 		t.Fatalf("bans %+v", bs)
 	}
 	l.Unban(ctx, "10.99.0.1/30") // any spelling of the same prefix

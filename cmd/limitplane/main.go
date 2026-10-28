@@ -40,7 +40,7 @@ func run() error {
 	addr := flag.String("addr", ":"+port, "listen address")
 	upstream := flag.String("upstream", "", "proxy to this URL (empty: demo app)")
 	cfgPath := flag.String("config", "", "policy JSON file (empty: built-in demo policy)")
-	redisURL := flag.String("redis", os.Getenv("REDIS_URL"), "shared Redis, e.g. redis://:pass@host:6379")
+	redisURL := flag.String("redis", os.Getenv("REDIS_URL"), "shared Redis, e.g. redis://:pass@host:6379, or a Cluster: redis+cluster://:pass@h1:6379,h2:6379")
 	adminKey := flag.String("admin-key", os.Getenv("LIMITPLANE_ADMIN_KEY"), "dashboard/API key (empty: random, printed once)")
 	metricsKey := flag.String("metrics-key", os.Getenv("LIMITPLANE_METRICS_KEY"), "bearer key for /metrics (empty: public)")
 	trust := flag.Bool("trust-proxy", false, "trust X-Forwarded-For (only behind a proxy you control)")
@@ -109,6 +109,7 @@ func run() error {
 	go srv.Run(hubCtx)
 	if red != nil {
 		go syncRedis(ctx, red, *failClosed)
+		go red.Watch(ctx) // bans from other replicas, as they happen
 	}
 	if op != nil {
 		// --config, if given, is only the startup policy: the CRDs own it from here.
@@ -170,8 +171,8 @@ func newBackend(redisURL string, failClosed bool, replicas func() int) (limiter.
 	return limiter.NewFallback(red, mem, replicas), red, nil
 }
 
-// syncRedis reads the ban list back every 2s (spreading CIDR bans, keeping a copy for outages)
-// and logs when Redis comes and goes, including at startup.
+// syncRedis reads the ban list back every 2s (repairing anything pub/sub missed, pushing bans
+// made during an outage, keeping a copy for the next one) and logs when Redis comes and goes.
 func syncRedis(ctx context.Context, r *limiter.Redis, failClosed bool) {
 	mode := "limiting locally, decisions marked degraded"
 	if failClosed {
@@ -189,9 +190,12 @@ func syncRedis(ctx context.Context, r *limiter.Redis, failClosed bool) {
 		}
 		if (err == nil) != up {
 			up = err == nil
-			if up {
+			switch {
+			case up:
 				log.Print("redis: reachable, limits are shared again")
-			} else {
+			case errors.Is(err, redisx.ErrNodeDown): // Cluster: only that node's slots are affected
+				log.Printf("redis: %v; only tenants on that node are affected (%s); retrying every 2s", err, mode)
+			default:
 				log.Printf("redis: unreachable (%v), %s; retrying every 2s", err, mode)
 			}
 		}

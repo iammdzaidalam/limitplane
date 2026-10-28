@@ -1,0 +1,72 @@
+# A 3-master Redis Cluster and two gateways on :18091 and :18092 (see docs/REDIS.md).
+#   docker compose -f docker-compose.cluster.yml up -d --build && ./scripts/prove-cluster.sh
+# Static IPs so a restarted master comes back at the address the others know.
+name: limitplane-cluster
+
+x-redis: &redis
+  image: redis:7-alpine
+  command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf",
+            "--cluster-node-timeout", "3000", "--appendonly", "yes",
+            # a dead master takes only its own slots down, not the whole cluster
+            "--cluster-require-full-coverage", "no"]
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+x-lp: &lp
+  build: .
+  environment:
+    LIMITPLANE_REPLICAS: "2"
+    LIMITPLANE_ADMIN_KEY: cluster-demo-key
+  volumes:
+    - ./limitplane.example.json:/etc/limitplane/config.json:ro
+  depends_on:
+    cluster-init:
+      condition: service_completed_successfully
+
+services:
+  redis-1:
+    <<: *redis
+    networks: {lp: {ipv4_address: 10.207.7.11}}
+  redis-2:
+    <<: *redis
+    networks: {lp: {ipv4_address: 10.207.7.12}}
+  redis-3:
+    <<: *redis
+    networks: {lp: {ipv4_address: 10.207.7.13}}
+
+  # one-shot: creates the cluster unless it already exists, then waits for it to be ok
+  cluster-init:
+    image: redis:7-alpine
+    networks: [lp]
+    depends_on:
+      redis-1: {condition: service_healthy}
+      redis-2: {condition: service_healthy}
+      redis-3: {condition: service_healthy}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        redis-cli -h 10.207.7.11 cluster info | grep -q cluster_state:ok ||
+        redis-cli --cluster create 10.207.7.11:6379 10.207.7.12:6379 10.207.7.13:6379 --cluster-replicas 0 --cluster-yes;
+        until redis-cli -h 10.207.7.11 cluster info | grep -q cluster_state:ok; do sleep 0.5; done
+
+  limitplane1:
+    <<: *lp
+    command: ["--config", "/etc/limitplane/config.json", "--addr", ":18091", "--trust-proxy",
+              "--redis", "redis+cluster://redis-1:6379,redis-2:6379,redis-3:6379"]
+    networks: [lp]
+    ports: ["127.0.0.1:18091:18091"]
+  limitplane2:
+    <<: *lp
+    command: ["--config", "/etc/limitplane/config.json", "--addr", ":18092", "--trust-proxy",
+              "--redis", "redis+cluster://redis-1:6379,redis-2:6379,redis-3:6379"]
+    networks: [lp]
+    ports: ["127.0.0.1:18092:18092"]
+
+networks:
+  lp:
+    name: limitplane-cluster
+    ipam:
+      config: [{subnet: 10.207.7.0/24}]

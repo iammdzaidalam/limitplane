@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"math"
@@ -133,7 +134,7 @@ func (s *Server) admin() http.Handler {
 	// {client...}: a CIDR ban has a slash in it.
 	api("DELETE /api/bans/{client...}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Pilot.Unban(r.Context(), r.PathValue("client")); err != nil {
-			unavailable(w, err)
+			banError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -281,7 +282,7 @@ func (s *Server) ban(w http.ResponseWriter, r *http.Request) {
 		b.Reason = "manual"
 	}
 	if err := s.Pilot.Ban(r.Context(), b.Client, time.Duration(b.Minutes)*time.Minute, b.Reason); err != nil {
-		unavailable(w, err)
+		banError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -344,6 +345,15 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		n = -1 // unknown: leave the gauge out rather than report 0
 	}
 	s.Hub.writeMetrics(w, n, time.Now())
+}
+
+// banError is 400 for a ban the store refuses, else 503.
+func banError(w http.ResponseWriter, err error) {
+	if errors.Is(err, limiter.ErrBadBan) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	unavailable(w, err)
 }
 
 func unavailable(w http.ResponseWriter, err error) {

@@ -12,6 +12,7 @@ Apple M5, Go 1.26. Reproduce: `make bench`.
 | Ban lookup, miss with 4 CIDR lengths in use | 40 | 0 |
 | Gateway middleware (no-op meter) | 200 | 4 |
 | Hub `OnDecision` (request-path cost of stats/SSE) | 53 | 0 |
+| Redis Cluster routing: first key + CRC16 slot | 11 | 0 |
 
 The middleware figure is dominated by `net/http` header handling, not the limiter.
-A Redis-backed check is one network round trip (ban, monthly and burst run in one script), so measure it on your own network.
+A Redis-backed check is one network round trip (monthly and burst run in one script; the ban lookup above runs in process first, so a banned client costs none), so measure it on your own network. On a Cluster it is still one round trip, to the master that owns the tenant's slot.

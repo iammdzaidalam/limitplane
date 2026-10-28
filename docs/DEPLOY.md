@@ -59,7 +59,7 @@ Useful values (see `values.yaml` for all of them):
 | --- | --- | --- |
 | `upstream` | `""` | App to protect. Empty runs the demo API. |
 | `policy` | one `free` tier | The policy file, same shape as `limitplane.example.json`. Hot-reloaded. |
-| `existingSecret` | `""` | Use your own Secret with `admin-key`, `metrics-key`, `redis-url`. |
+| `existingSecret` | `""` | Use your own Secret with `admin-key`, `metrics-key`, `redis-url`. For Redis Cluster set `redis-url` to `redis+cluster://h1:6379,h2:6379` (see [REDIS.md](REDIS.md)). |
 | `redis.enabled` | `true` | Bundled single-node Redis. Set `redisUrl` to use your own. |
 | `operator.enabled` | `false` | Read policy and tenants from `RateLimitPolicy`/`Tenant` CRs (see [OPERATOR.md](OPERATOR.md)). |
 | `serviceMonitor.enabled` | `false` | Scrape `/metrics` with the metrics key. |

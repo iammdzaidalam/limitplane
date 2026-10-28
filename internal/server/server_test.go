@@ -167,6 +167,9 @@ func TestAuthAndAdmin(t *testing.T) {
 	if b, _ := io.ReadAll(do(t, "GET", ts.URL+"/api/bans", tok, "").Body); strings.TrimSpace(string(b)) != "[]" {
 		t.Fatalf("no bans must be [], not null: %s", b)
 	}
+	if r := do(t, "POST", ts.URL+"/api/bans", tok, `{"client":"::ffff:0.0.0.0/64","minutes":5}`); r.StatusCode != 400 {
+		t.Fatalf("mapped prefix under /96: %d, want 400", r.StatusCode)
+	}
 	d := do(t, "GET", ts.URL+"/", "", "")
 	if d.StatusCode != 200 || d.Header.Get("Content-Security-Policy") == "" || d.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("dashboard %d %v", d.StatusCode, d.Header)

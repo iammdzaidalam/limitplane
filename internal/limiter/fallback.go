@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"time"
+
+	"github.com/iammdzaidalam/limitplane/internal/redisx"
 )
 
 // cooldown is how long a failing primary is skipped, so a dead Redis costs one timeout, not one per request.
@@ -16,11 +18,15 @@ func (b *breaker) closed() bool { return time.Now().UnixNano() >= b.openUntil.Lo
 func (b *breaker) trip()        { b.openUntil.Store(time.Now().Add(cooldown).UnixNano()) }
 
 // failover reports whether err should send us to the backup (not caller cancels or bad input).
+// One Cluster node failing sends just this request there: redisx already skips that node, and
+// tenants on the other nodes stay shared.
 func (b *breaker) failover(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil || errors.Is(err, ErrInvalid) {
+	if err == nil || ctx.Err() != nil || errors.Is(err, ErrInvalid) || errors.Is(err, ErrBadBan) {
 		return false
 	}
-	b.trip()
+	if !errors.Is(err, redisx.ErrNodeDown) {
+		b.trip()
+	}
 	return true
 }
 
