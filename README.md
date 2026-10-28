@@ -89,5 +89,5 @@ make test    # go test -race ./...
 make lint    # go vet + gofmt
 make bench
 make prove-cluster   # 3-master Redis Cluster, two gateways
-cd xdp && ./test.sh  # XDP proof in a privileged Docker container
+./xdp/test.sh         # XDP proof in a privileged Docker container
 ```
