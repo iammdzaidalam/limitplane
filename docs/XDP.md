@@ -141,8 +141,8 @@ on an M-series Mac (kernel 6.12, generic mode on veth):
 3.4M packets per second dropped on one veth with generic XDP; the socket saw the 1,000 pps budget plus
 one burst.
 
-## Azure test
+## Azure test (optional, not run)
 
-`xdp/azure/` provisions two VMs with accelerated networking, floods the target with and without the
+The numbers above come from the Docker test. For native mode on real NICs, `xdp/azure/` provisions two VMs with accelerated networking, floods the target with and without the
 native-mode fast path, and reports pps sent, received and dropped, CPU, softirq and gateway p99. Steps
 and cost (about $0.31/hour) are in [xdp/azure/README.md](../xdp/azure/README.md).
