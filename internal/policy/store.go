@@ -72,11 +72,9 @@ func (s *Store) Resolve(apiKey, path string) Match {
 // Watch polls path's mtime and swaps in valid changes until ctx ends.
 // An invalid file keeps the old config and reports through onErr.
 func (s *Store) Watch(ctx context.Context, path string, every time.Duration, onErr func(error)) {
+	// no baseline: the first tick reloads once, so an edit between Load and Watch isn't missed
 	var last time.Time
-	var size int64
-	if fi, err := os.Stat(path); err == nil {
-		last, size = fi.ModTime(), fi.Size()
-	}
+	size := int64(-1)
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
