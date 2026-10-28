@@ -68,6 +68,12 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: metrics-key, optional: true}}
             - name: REDIS_URL
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: redis-url, optional: true}}
+            {{- if not .Values.operator.enabled }}
+            # fallback budget is split across replicas while Redis is down (operator mode counts live ones);
+            # with an HPA, minReplicas errs towards admitting a little more rather than starving traffic
+            - name: LIMITPLANE_REPLICAS
+              value: {{ ternary .Values.autoscaling.minReplicas .Values.replicaCount .Values.autoscaling.enabled | quote }}
+            {{- end }}
             {{- if .Values.operator.enabled }}
             - name: POD_NAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}

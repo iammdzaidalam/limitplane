@@ -63,7 +63,7 @@ Useful values (see `values.yaml` for all of them):
 | `redis.enabled` | `true` | Bundled single-node Redis. Set `redisUrl` to use your own. |
 | `operator.enabled` | `false` | Read policy and tenants from `RateLimitPolicy`/`Tenant` CRs (see [OPERATOR.md](OPERATOR.md)). |
 | `serviceMonitor.enabled` | `false` | Scrape `/metrics` with the metrics key. |
-| `prometheusRule.enabled` | `false` | Alerts: high block rate, Redis fallback active, fail-closed errors, tenant out of quota. |
+| `prometheusRule.enabled` | `false` | Alerts: high block rate, Redis fallback active, fail-closed errors, tenant past 80% of its quota, tenant out of quota. |
 
 Without `existingSecret` the chart generates the admin and metrics keys on first install and keeps
 them on upgrade. Policy changes roll out without a restart; key changes restart the pods.
