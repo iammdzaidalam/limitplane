@@ -125,13 +125,12 @@ function emit(id, r, path, at) {
   tick(); setInterval(tick, 1000)
 }
 
-// hero: the selection box reports its own measured size, like a design-tool annotation
+// hero: design-tool selection box with leader lines to the callouts
 {
-  const sel = $('#sel'), dim = $('#dim'), grid = $('.hero-grid'), svg = $('#leads'), notes = $$('.notes li')
+  const sel = $('#sel'), grid = $('.hero-grid'), svg = $('#leads'), notes = $$('.notes li')
   // leader lines: box -> one vertical spine -> a branch to each callout
   const lead = () => {
     const r = sel.getBoundingClientRect()
-    dim.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`
     if (getComputedStyle(svg).display === 'none') return
     const g = grid.getBoundingClientRect(), ns = notes.map(n => n.getBoundingClientRect())
     const x0 = r.right - g.left + 8, y0 = r.top + r.height / 2 - g.top

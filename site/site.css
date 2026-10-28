@@ -114,14 +114,12 @@ pre { margin: 0; font: 12.5px/1.65 var(--mono); overflow-x: auto; tab-size: 2; }
 .hero { border-top: 0; }
 .hero .wrap { padding-top: 96px; }
 .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 640px) minmax(0, 1fr); gap: 40px 56px; align-items: center; margin-bottom: 72px; }
-.hero h1 { margin: 18px 0 52px; }
+.hero h1 { margin: 18px 0 32px; }
 .intro { font-size: 17px; max-width: 52ch; margin-bottom: 28px; }
 .sel { position: relative; display: inline-block; outline: 1px solid var(--primary); outline-offset: 4px; }
 .sel i { position: absolute; width: 7px; height: 7px; background: var(--panel); border: 1px solid var(--primary); }
 .sel i:nth-child(1) { top: -8px; left: -8px; } .sel i:nth-child(2) { top: -8px; right: -8px; }
 .sel i:nth-child(3) { bottom: -8px; left: -8px; } .sel i:nth-child(4) { bottom: -8px; right: -8px; }
-.dim { position: absolute; left: 50%; bottom: -34px; transform: translateX(-50%); padding: 1px 6px; border-radius: 4px; background: var(--primary); color: #fff; font: 500 11px/1.5 var(--mono); letter-spacing: .02em; white-space: nowrap; }
-.dim:empty { display: none; }
 .notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
 .notes li { position: relative; justify-self: start; display: grid; padding: 8px 12px; border: 1px solid var(--line2); border-radius: 6px; background: var(--panel); font: 500 15px/1.3 var(--mono); letter-spacing: -.02em; }
 .notes li:nth-child(even) { margin-left: 32px; }
