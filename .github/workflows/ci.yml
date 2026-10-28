@@ -21,6 +21,19 @@ jobs:
           if grep -Eq '^require|^\s*require\s' go.mod; then echo "go.mod must have no require"; exit 1; fi
       - name: globe copies match
         run: cmp site/globe.js web/globe.js
+  xdp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: xdp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: xdp/go.sum
+      - run: go vet ./...
+      - run: go test -race ./...
   docker:
     runs-on: ubuntu-latest
     needs: test
