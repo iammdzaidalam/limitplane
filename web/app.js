@@ -14,6 +14,56 @@ function h(tag, props = {}, ...kids) {
   return e
 }
 
+// IPs and CIDRs, parsed to BigInts: enough to validate a ban and to match clients against a range.
+// The gateway bans by client IP, so a ban target is an IP or a CIDR; the server canonicalises it.
+function parseIP(s) {
+  const v4 = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(s)
+  if (v4) {
+    const p = v4.slice(1).map(Number)
+    return p.every(x => x < 256) ? { v: 4, n: p.reduce((a, x) => a * 256n + BigInt(x), 0n), len: 32 } : null
+  }
+  if (!s.includes(':') || !/^[0-9a-f:.]+$/i.test(s)) return null
+  const m = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(s) // ::ffff:192.0.2.1
+  if (m) {
+    const t = parseIP(m[2])
+    if (t?.v !== 4) return null
+    s = m[1] + (t.n >> 16n).toString(16) + ':' + (t.n & 0xffffn).toString(16)
+  }
+  const halves = s.split('::'), part = x => (x ? x.split(':') : [])
+  if (halves.length > 2) return null
+  const [a, b] = halves.map(part), fill = b ? 8 - a.length - b.length : 0
+  if (b && fill < 1) return null
+  const groups = b ? [...a, ...Array(fill).fill('0'), ...b] : a
+  if (groups.length !== 8 || !groups.every(g => /^[0-9a-f]{1,4}$/i.test(g))) return null
+  const n = groups.reduce((x, g) => x * 65536n + BigInt('0x' + g), 0n)
+  return n >> 32n === 0xffffn ? { v: 4, n: n & 0xffffffffn, len: 32 } : { v: 6, n, len: 128 } // IPv4-mapped counts as IPv4
+}
+const v4Text = n => [24n, 16n, 8n, 0n].map(k => (n >> k) & 255n).join('.')
+const MIN_BITS = { 4: 8, 6: 16 } // a wider range is almost always a typo (10.0.0.0/2 for /24)
+// parseTarget: { ip, bits, net, cidr, text } or { error }
+function parseTarget(raw) {
+  const [ip, bits, extra] = raw.trim().split('/')
+  const a = ip && parseIP(ip)
+  if (extra != null || !a) return { error: 'Not an IP or CIDR. Bans match the client IP, e.g. 203.0.113.7 or 10.0.0.0/24.' }
+  if (bits == null) return { ...a, bits: a.len, cidr: false, text: a.v === 4 ? v4Text(a.n) : ip.toLowerCase() }
+  if (!/^\d{1,3}$/.test(bits) || +bits > a.len) return { error: `The prefix length must be 0 to ${a.len} for IPv${a.v}.` }
+  const b = +bits, host = BigInt(a.len - b), net = (a.n >> host) << host
+  if (b < MIN_BITS[a.v]) return { error: `/${b} is wider than /${MIN_BITS[a.v]}. Ban a narrower range.` }
+  if (b === a.len) return { ...a, bits: b, cidr: false, text: a.v === 4 ? v4Text(a.n) : ip.toLowerCase() }
+  // IPv6 text is left for the server to canonicalise; IPv4 is masked here so the label matches the list
+  return { v: a.v, n: net, len: a.len, bits: b, cidr: true, masked: net !== a.n, text: a.v === 4 ? `${v4Text(net)}/${b}` : `${ip.toLowerCase()}/${b}` }
+}
+const rangeText = t => (t.v === 4 ? `${fmt(2 ** (32 - t.bits))} addresses` : `/${t.bits} range`)
+const inRange = (t, ip) => {
+  const a = parseIP(ip)
+  if (!a || a.v !== t.v) return false
+  const host = BigInt(t.len - t.bits)
+  return a.n >> host === t.n >> host
+}
+// path segments encoded one by one, so a CIDR's slash stays a separator (api/bans/10.0.0.0/24):
+// the server routes it with {client...}, and proxies that reject %2F never see one
+const banPath = client => 'bans/' + client.split('/').map(encodeURIComponent).join('/')
+
 const session = {
   get() { try { return sessionStorage.getItem('lp-token') } catch { return null } },
   set(v) { try { v ? sessionStorage.setItem('lp-token', v) : sessionStorage.removeItem('lp-token') } catch {} },
@@ -126,7 +176,10 @@ function tick() {
 
 // stats
 let series = [], totals = { total: 0, allowed: 0, blocked: 0 }
-let tenants = [], clients = [], bans = [], banned = new Set()
+let tenants = [], clients = [], bans = [], banned = new Set(), banNets = []
+let cluster = { backend: '', kube: false, leader: false }
+// banned: exact match, or inside a CIDR ban
+const isBanned = ip => banned.has(ip) || banNets.some(t => inRange(t, ip))
 let policyCfg = null, degraded = false, degradedUntil = 0, lastOk = 0
 const loaded = {}
 
@@ -148,14 +201,17 @@ async function refresh(seed) {
     const v = s.value
     totals = { total: v.total, allowed: v.allowed, blocked: v.blocked }
     degraded = v.degraded
-    $('#backend').className = 'pill ' + (v.degraded ? 'warn' : '')
-    $('#backend').textContent = v.backend + (v.degraded ? ' · degraded' : '')
+    cluster = { backend: v.backend, kube: !!v.kube, leader: !!v.leader }
     if (seed === true) { series = (v.series || []).map(p => ({ ...p })); advance(); draw() }
     tenants = v.tenants || []; loaded.tenants = true
     renderTenants(); updateNotice()
   } else failed('tenants', 'monthly quotas', s.reason)
   if (c.status === 'fulfilled') { clients = c.value || []; loaded.clients = true } else failed('clients', 'clients', c.reason)
-  if (b.status === 'fulfilled') { bans = b.value || []; banned = new Set(bans.map(x => x.client)); loaded.bans = true } else failed('bans', 'bans', b.reason)
+  if (b.status === 'fulfilled') {
+    bans = b.value || []; loaded.bans = true
+    banned = new Set(bans.map(x => x.client))
+    banNets = bans.map(x => parseTarget(x.client)).filter(t => t.cidr)
+  } else failed('bans', 'bans', b.reason)
   if (loaded.clients) renderClients()
   if (loaded.bans) renderBans()
   renderTotals()
@@ -181,12 +237,27 @@ function renderTotals() {
   $('#bansPill').className = 'pill' + (bans.length ? ' warn' : '')
 }
 
+// status pills: backend, degraded while the fallback answers, and the replica's role in --kube mode
+function renderStatus() {
+  const on = degraded || Date.now() < degradedUntil
+  const be = $('#backend')
+  if (cluster.backend) be.textContent = cluster.backend
+  be.title = cluster.backend === 'redis' ? 'Limits and bans are shared through Redis' : cluster.backend === 'memory' ? 'Limits and bans live in this process only' : be.title
+  $('#degraded').hidden = !on
+  const k = $('#kube')
+  k.hidden = !cluster.kube
+  k.textContent = 'kube · ' + (cluster.leader ? 'leader' : 'follower')
+  k.className = 'pill' + (cluster.leader ? ' ok' : '')
+  k.title = cluster.leader ? 'Operator mode. This replica holds the Lease and writes status and Events.' : 'Operator mode. Another replica holds the Lease; this one serves the same policy.'
+}
+
 function updateNotice() {
+  renderStatus()
   const on = degraded || Date.now() < degradedUntil
   const n = $('#notice')
   if (n.hidden === !on) return
   n.hidden = !on
-  n.replaceChildren(h('b', {}, 'Shared backend unreachable. '), 'Limits fall back to each instance\'s local memory until it recovers, so counts can drift across instances.')
+  n.replaceChildren(h('b', {}, 'Shared backend unreachable. '), 'Each replica limits from its own memory on its share of the budget until Redis recovers. Monthly counts restart locally, so they can drift.')
 }
 
 const rateText = tier => {
@@ -264,7 +335,7 @@ function renderClients() {
         h('button', { className: 'arrow', type: 'button', title: 'Show decisions from ' + c.client, 'aria-label': 'Show decisions from ' + c.client, onclick: () => viewClient(c.client) }, arrowIcon())),
       h('p', { className: 'sub2' }, `${rps}/s · `, col(pct >= 50 ? 'badtxt' : '', pct + '% blocked'), h('br'), 'seen ' + ago(c.lastSeen)),
       h('div', { className: 'cfoot' }, col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
-        banned.has(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
+        isBanned(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
   })
   $('#clients').replaceChildren(...(cards.length ? cards : [h('div', { className: 'rows' }, h('div', { className: 'state-row' }, 'No clients have sent traffic yet.'))]))
   $('#clCount').textContent = `${clients.length} ${clients.length === 1 ? 'client' : 'clients'}`
@@ -276,10 +347,13 @@ function left(until) {
 }
 
 function renderBans() {
-  const rows = bans.map(b => h('div', { className: 'r' },
-    col('mono ell', b.client),
+  const rows = bans.map(b => {
+    const t = parseTarget(b.client), n = t.cidr ? clients.filter(c => inRange(t, c.client)).length : 0
+    return h('div', { className: 'r' },
+    h('div', {}, col('mono ell', b.client), t.cidr ? h('span', { className: 'sub2 ell', title: `${n} active ${n === 1 ? 'client' : 'clients'} in this range` }, rangeText(t) + (n ? ` · ${n} active` : '')) : null),
     h('div', {}, h('span', { className: 'mono', 'data-until': b.until }, left(b.until)), col('sub2 ell', b.reason || 'manual')),
-    h('button', { className: 'btn small', type: 'button', 'aria-label': 'Unban ' + b.client, onclick: () => unban(b.client) }, 'Unban')))
+    h('button', { className: 'btn small', type: 'button', 'aria-label': 'Unban ' + b.client, onclick: () => unban(b.client) }, 'Unban'))
+  })
   list($('#bans'), head(['Client', 'Expires', '']), rows, 'Nobody is banned.')
 }
 
@@ -299,7 +373,7 @@ async function ban(client, minutes, reason) {
 
 async function unban(client) {
   try {
-    await api('bans/' + encodeURIComponent(client), { method: 'DELETE' })
+    await api(banPath(client), { method: 'DELETE' })
     toast('Unbanned ' + client, 'ok')
     refresh()
   } catch (err) { toast('Unban failed: ' + err.message, 'bad') }
@@ -307,15 +381,16 @@ async function unban(client) {
 
 $('#banForm').onsubmit = async e => {
   e.preventDefault()
-  const f = e.target, m = Number(f.minutes.value), client = f.client.value.trim()
-  const bad = !client ? 'Enter a client: an IP or a tenant id.' : !(m >= 1 && m <= 10080) ? 'Minutes must be between 1 and 10080.' : ''
-  f.client.setAttribute('aria-invalid', !client)
-  f.minutes.setAttribute('aria-invalid', !!client && !!bad)
+  const f = e.target, m = Number(f.minutes.value), raw = f.client.value.trim()
+  const t = raw ? parseTarget(raw) : { error: 'Enter an IP or a CIDR, e.g. 203.0.113.7 or 10.0.0.0/24.' }
+  const badClient = t.error, bad = badClient || (!(Number.isInteger(m) && m >= 1 && m <= 10080) ? 'Minutes must be a whole number from 1 to 10080.' : '')
+  f.client.setAttribute('aria-invalid', !!badClient)
+  f.minutes.setAttribute('aria-invalid', !badClient && !!bad)
   if (bad) {
     $('#banMsg').textContent = bad
-    return (client ? f.minutes : f.client).focus()
+    return (badClient ? f.client : f.minutes).focus()
   }
-  if (await ban(client, m, f.reason.value.trim() || 'manual')) f.reset()
+  if (await ban(t.text, m, f.reason.value.trim() || 'manual')) f.reset()
 }
 
 // live events
@@ -515,7 +590,7 @@ function openDrawer(d, from) {
     row('Retry after', dur(d.retryAfter)),
     row('Degraded', d.degraded ? 'yes' : 'no', d.degraded ? 'local fallback decided this' : null))
   const b = $('#dBan')
-  b.disabled = banned.has(d.client)
+  b.disabled = isBanned(d.client)
   b.textContent = b.disabled ? 'Already banned' : 'Ban client 10 min'
   $('#drawer').hidden = false; $('#scrim').hidden = false
   document.body.dataset.drawer = ''
@@ -742,7 +817,7 @@ function commands(raw) {
     ...(proxied ? [] : [go('try', 'Try it', '4')]),
     { group: 'Feed', label: paused ? 'Resume the decision feed' : 'Pause the decision feed', key: 'p', run: () => setPaused(!paused) },
     { group: 'Feed', label: 'Filter decisions', key: '/', run: () => { location.hash = '#/overview'; route(); $('#q').focus() } },
-    { group: 'Clients', label: 'Ban a client…', hint: 'type it', keep: true, run: () => { palQ.value = 'ban '; palRender() } },
+    { group: 'Clients', label: 'Ban an IP or CIDR…', hint: 'type it', keep: true, run: () => { palQ.value = 'ban '; palRender() } },
     { group: 'General', label: `Switch to ${isDark() ? 'light' : 'dark'} theme`, run: toggleTheme },
     { group: 'General', label: 'Keyboard shortcuts', key: '?', run: () => $('#help').showModal() },
     { group: 'General', label: 'Sign out', run: logout },
@@ -752,9 +827,19 @@ function commands(raw) {
   const found = banOnly ? [] : all.filter(c => !q || c.label.toLowerCase().includes(q))
   if (!target || /\s/.test(target) || (!banOnly && found.length && target.length < 3)) return found
   const t = target.toLowerCase(), banItem = (id, hint) => ({ group: 'Ban for 10 minutes', label: 'Ban ' + id, hint, run: () => ban(id, 10, 'manual (palette)') })
-  const known = clients.filter(c => !banned.has(c.client) && c.client.toLowerCase().includes(t)).slice(0, 5)
+  const known = clients.filter(c => !isBanned(c.client) && c.client.toLowerCase().includes(t)).slice(0, 5)
   const bans = known.map(c => banItem(c.client, c.label || 'client'))
-  if (!known.some(c => c.client.toLowerCase() === t) && !banned.has(target)) bans.push(banItem(target, 'as typed'))
+  const typed = parseTarget(target)
+  if (typed.error) {
+    // only explain when the user is clearly banning; a plain search just shows what matched
+    if (banOnly && !known.length) bans.push({ group: 'Ban for 10 minutes', label: typed.error, hint: 'not banned', disabled: true, run: () => {} })
+  } else if (typed.cidr) {
+    if (banned.has(typed.text)) bans.push({ group: 'Ban for 10 minutes', label: typed.text + ' is already banned', disabled: true, run: () => {} })
+    else {
+      const n = clients.filter(c => inRange(typed, c.client)).length
+      bans.push(banItem(typed.text, rangeText(typed) + (n ? ` · ${n} active` : '') + (typed.masked ? ' · masked' : '')))
+    }
+  } else if (!known.some(c => c.client.toLowerCase() === typed.text) && !isBanned(typed.text)) bans.push(banItem(typed.text, 'as typed'))
   return [...found, ...bans]
 }
 
@@ -763,7 +848,7 @@ function palRender() {
   palAt = Math.min(palAt, Math.max(0, palItems.length - 1))
   let g = ''
   palList.replaceChildren(...palItems.flatMap((c, i) => {
-    const li = h('li', { id: 'pc' + i, role: 'option', className: 'pitem', onclick: () => palRun(i), onpointermove: () => palMove(i) },
+    const li = h('li', { id: 'pc' + i, role: 'option', className: 'pitem' + (c.disabled ? ' off' : ''), 'aria-disabled': !!c.disabled, onclick: () => palRun(i), onpointermove: () => palMove(i) },
       h('span', {}, c.label), c.hint ? h('small', {}, c.hint) : null, c.key ? h('kbd', {}, c.key) : null)
     const out = c.group === g ? [li] : [h('li', { role: 'presentation', className: 'pgroup' }, c.group), li]
     g = c.group
@@ -783,7 +868,7 @@ function palMove(i) {
 
 function palRun(i) {
   const c = palItems[i]
-  if (!c) return
+  if (!c || c.disabled) return
   // restore focus before running, so the command can move it (close's own event fires later)
   if (!c.keep) { pal.close(); palFrom?.focus(); palFrom = null }
   c.run()

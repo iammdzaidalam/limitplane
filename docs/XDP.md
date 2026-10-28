@@ -42,8 +42,8 @@ structs and helper IDs are declared in the file, so any clang with a BPF target 
   possible prefix length (up to 129); the trie does one longest-prefix lookup.
 - **One map for both families.** IPv4 is stored IPv4-mapped (`::ffff:a.b.c.d`, prefix 96+n), so IPv4 and
   IPv6 bans share one trie and one lookup path.
-- **The gateway can't do this.** Its ban check is an exact string match on the client IP. A CIDR posted to
-  `/api/bans` does nothing in the gateway but is enforced in the trie; `xdp/test.sh` proves it.
+- **Same bans, two layers.** The gateway also enforces CIDRs (one map lookup per prefix length in use),
+  so a ban holds whether or not the fast path runs; XDP just stops the packets before the stack sees them.
 
 A trie lookup walks nodes, so it costs more than a hash lookup, but it is still small next to what the
 stack spends on a packet that it lets through.

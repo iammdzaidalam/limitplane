@@ -306,10 +306,12 @@ legend { padding: 0; margin-bottom: 10px; }
 }
 
 /* built with: plain mono cells in a bordered grid */
-.marks { list-style: none; margin: 24px 0 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+.marks { list-style: none; margin: 24px 0 0; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
 .marks li { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 104px; border-left: 1px solid var(--line); font: 500 12px var(--mono); letter-spacing: .02em; color: var(--muted); }
 .marks svg { width: 30px; height: 30px; }
 .marks li:first-child { border-left: 0; }
+.marks .helm path { fill: light-dark(#0F1689, #8f96f5); } /* Helm's navy disappears on the dark panel */
+@media (max-width: 960px) and (min-width: 641px) { .marks { grid-template-columns: repeat(4, minmax(0, 1fr)); } .marks li:nth-child(4n+1) { border-left: 0; } .marks li:nth-child(n+5) { border-top: 1px solid var(--line); } .marks li:last-child { grid-column: span 2; } }
 @media (max-width: 640px) { .marks { grid-template-columns: repeat(2, minmax(0, 1fr)); } .marks li { border-left: 0; border-top: 1px solid var(--line); } .marks li:nth-child(even) { border-left: 1px solid var(--line); } .marks li:nth-child(-n+2) { border-top: 0; } .marks li:last-child { grid-column: 1 / -1; } }
 
 /* close */

@@ -39,7 +39,9 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 <main id="main" tabindex="-1" hidden>
   <div id="app" data-loading>
     <div class="strip">
-      <span id="backend" class="pill">backend</span>
+      <span id="backend" class="pill" title="Where limits and bans are stored">backend</span>
+      <span id="degraded" class="pill warn" title="The shared backend is unreachable: each replica limits on its own share of the budget" hidden>degraded</span>
+      <span id="kube" class="pill" hidden></span>
       <span id="live" class="pill"><span class="dot"></span><span>offline</span></span>
       <a id="bansPill" class="pill" href="#/clients">0 bans active</a>
       <span class="spacer"></span>
@@ -136,7 +138,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
         <section class="card c5" aria-labelledby="h-bans">
           <div class="ch"><h2 id="h-bans">Bans</h2></div>
           <form id="banForm" class="banform" novalidate>
-            <label>Client<input name="client" required placeholder="ip or tenant" autocomplete="off" spellcheck="false"></label>
+            <label>Client<input name="client" required placeholder="IP or CIDR, e.g. 10.0.0.0/24" autocomplete="off" spellcheck="false" aria-describedby="banMsg"></label>
             <label>Minutes<input name="minutes" type="number" min="1" max="10080" value="10" inputmode="numeric"></label>
             <label class="wide">Reason<input name="reason" placeholder="manual" autocomplete="off"></label>
             <button class="btn primary" type="submit">Ban client</button>
@@ -247,7 +249,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 <dialog id="palette" class="dlg palette" aria-label="Command palette">
   <div class="psearch">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
-    <input id="palQ" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Type a command, or a client to ban" placeholder="Command, or a client to ban" autocomplete="off" spellcheck="false">
+    <input id="palQ" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Type a command, or an IP or CIDR to ban" placeholder="Command, or ban an IP or CIDR" autocomplete="off" spellcheck="false">
     <kbd>esc</kbd>
   </div>
   <ul id="palList" class="plist" role="listbox" aria-label="Commands"></ul>

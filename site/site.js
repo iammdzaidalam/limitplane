@@ -13,7 +13,8 @@ const COSTS = { '/healthz': 1, '/v1/embed': 2, '/v1/generate': 5 }
 const STORM = { blocks: 20, window: 10e6, ban: 300e6 } // internal/server/server.go, in microseconds
 const sec = u => Math.ceil(u / 1e6)
 
-// Same math as gcra() in internal/limiter/rate.go; times are microseconds, tat is the stored int.
+// Same order as the gateway's one check: ban, monthly, then gcra() from internal/limiter/rate.go,
+// and nothing is written unless every part passes. Times are microseconds, tat is the stored int.
 function gate(tier, { bans = true, monthly = true } = {}) {
   const c = TIERS[tier], t = 1e6 / c.rate, dvt = c.burst * t
   const g = { c, tat: 0, used: 0, blocks: [], banUntil: 0 }
@@ -23,22 +24,21 @@ function gate(tier, { bans = true, monthly = true } = {}) {
     const deny = (reason, stop, o) => ({ status: 429, reason, stop, cost, ...o })
     if (g.banUntil > now) {
       const retry = sec(g.banUntil - now)
-      return deny('banned', 0, { limit: 0, remaining: 0, reset: retry, retry })
+      return deny('banned', 2, { limit: 0, remaining: 0, reset: retry, retry })
+    }
+    // monthly before burst: when both would fail, the client is told to wait for the 1st
+    if (monthly && c.month && g.used + cost > c.month) {
+      const d = new Date(), retry = Math.ceil((Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - d) / 1000)
+      return deny('monthly', 3, { limit: c.month, remaining: c.month - g.used, reset: retry, retry })
     }
     const tat = Math.max(g.tat, now), next = tat + cost * t, allowAt = next - dvt
     if (allowAt > now) {
       g.blocks = g.blocks.filter(b => now - b < STORM.window).concat(now)
       if (bans && g.blocks.length >= STORM.blocks) g.banUntil = now + STORM.ban
-      return deny('burst', 3, { limit: c.burst, remaining: Math.floor((dvt - (tat - now)) / t), reset: sec(tat - now), retry: Math.max(1, sec(allowAt - now)) })
+      return deny('burst', 4, { limit: c.burst, remaining: Math.floor((dvt - (tat - now)) / t), reset: sec(tat - now), retry: Math.max(1, sec(allowAt - now)) })
     }
-    g.tat = next // stored before the monthly check, so a monthly reject still burns burst, as in the gateway
-    if (monthly && c.month) {
-      if (g.used + cost > c.month) {
-        const d = new Date(), retry = Math.ceil((Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - d) / 1000)
-        return deny('monthly', 4, { limit: c.month, remaining: c.month - g.used, reset: retry, retry })
-      }
-      g.used += cost
-    }
+    g.tat = next // both checks passed: now write both counters
+    if (monthly && c.month) g.used += cost
     return { status: 200, reason: 'ok', stop: -1, cost, limit: c.burst, remaining: Math.floor((dvt - (next - now)) / t), reset: sec(next - now) }
   }
   return g
@@ -182,7 +182,7 @@ function emit(id, r, path, at) {
   let g, setBurst
   const setMonth = cells($('#month-cells'), 1)
   const $o = id => document.getElementById(id), chips = $o('chips'), status = $o('status'), out = $o('out'), trace = $o('trace')
-  const STAGES = ['ban', 'who', 'cost', 'burst', 'monthly', 'respond']
+  const STAGES = ['who', 'cost', 'ban', 'monthly', 'burst', 'respond']
   const msg = (r, tier) => ({
     burst: `Too many requests for the ${tier} tier (this route costs ${r.cost} units). Retry in ${r.retry}s.`,
     monthly: `The ${tier} tier's monthly quota of ${r.limit} units is used up. It resets on the 1st (UTC).`,
@@ -265,9 +265,9 @@ function emit(id, r, path, at) {
   const tiles = $$('#pipe .stage'), btns = $$('.scen button'), outcome = $('#outcome')
   const TEXT = {
     '-1': 'Every check passed. The request goes upstream with RateLimit-Limit, -Remaining and -Reset on the response.',
-    3: '429 with reason burst and a Retry-After. The burst bucket was empty, and the monthly quota is not touched.',
-    4: '429 with reason monthly. The monthly quota is used up, and Retry-After runs to the 1st of next month (UTC).',
-    0: '429 with reason banned. Autopilot banned this client after repeated burst blocks, so nothing else runs.',
+    4: '429 with reason burst and a Retry-After of a second or two. The bucket was empty, and nothing was written: the monthly quota is not touched.',
+    3: '429 with reason monthly, and Retry-After runs to the 1st of next month (UTC). Nothing was written, so the burst bucket is untouched too.',
+    2: '429 with reason banned. The IP, or a CIDR containing it, is on the shared ban list, so no counter is read or written.',
   }
   let seq = 0
   function play(stop, animate = true) {
