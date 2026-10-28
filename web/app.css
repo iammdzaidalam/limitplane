@@ -68,11 +68,10 @@ main { max-width: 1264px; min-height: 100vh; margin: 0 auto; padding: calc(var(-
 .strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 44px; }
 .stamp { font: 12px var(--mono); color: var(--muted); }
 .stamp.bad { color: var(--bad-ink); }
-/* section head: full-bleed rule underneath, ticks where it crosses the column rules, number in the gutter */
+/* section head: full-bleed rule underneath, ticks where it crosses the column rules */
 .title { position: relative; margin: 40px 0 32px; padding-bottom: 32px; }
 .title::after { content: ""; position: absolute; left: -100vw; right: -100vw; bottom: 0; height: 1px; background: var(--line); }
 .title::before { content: ""; position: absolute; left: -45px; right: -45px; bottom: -4px; height: 9px; border-inline: 1px solid var(--control); }
-.sec { position: absolute; left: -32px; top: 10px; font: 500 11px var(--mono); letter-spacing: .12em; color: var(--muted); }
 h1 { font-size: 48px; margin: 0; }
 h1:focus { outline: none; }
 .sub { color: var(--body); margin: 12px 0 0; max-width: 64ch; min-height: 26px; }
@@ -87,12 +86,10 @@ h1:focus { outline: none; }
   .c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c7 { grid-column: span 7; } .c8 { grid-column: span 8; }
 }
 
-/* cards: white, hairline, numbered heading */
-[data-view] { counter-reset: card; }
+/* cards: white, hairline */
 .card { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--card-shadow); border-radius: 16px; padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
 .ch { display: flex; align-items: center; gap: 8px; min-height: 32px; flex-wrap: wrap; }
 .ch h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; display: flex; align-items: baseline; }
-.ch h2::before { counter-increment: card; content: counter(card, decimal-leading-zero); font: 500 11px var(--mono); letter-spacing: .12em; color: var(--muted); margin-right: 12px; transform: translateY(-2px); }
 .card > .msg:empty { display: none; }
 .tile { background: var(--tile); border-radius: 12px; }
 
@@ -303,7 +300,6 @@ pre.out { padding: 14px 16px; font: 12.5px/1.6 var(--mono); white-space: pre-wra
 
 @media (max-width: 1099px) {
   main { padding-inline: 24px; }
-  .sec { position: static; display: block; margin-bottom: 12px; }
   .title::before { left: -29px; right: -29px; }
 }
 

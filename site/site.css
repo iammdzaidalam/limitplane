@@ -47,8 +47,8 @@ h3 { font-size: 18px; font-weight: 500; letter-spacing: -.015em; line-height: 1.
 h1 em, h2 em { font-style: normal; color: var(--primary); }
 p { margin: 0; max-width: 62ch; color: var(--body); }
 .muted { color: var(--muted); }
-.tag, .hint, .label, .k, .gut, .clock, .pal-foot, .pal .grp { font: 500 11px/1.4 var(--mono); color: var(--muted); letter-spacing: .02em; }
-.hint, .label, .k, .gut, .pal-foot, .pal .grp { text-transform: uppercase; letter-spacing: .12em; }
+.tag, .hint, .label, .k, .clock, .pal-foot, .pal .grp { font: 500 11px/1.4 var(--mono); color: var(--muted); letter-spacing: .02em; }
+.hint, .label, .k, .pal-foot, .pal .grp { text-transform: uppercase; letter-spacing: .12em; }
 
 /* top bar */
 .top { position: sticky; top: 0; z-index: 30; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
@@ -67,13 +67,11 @@ p { margin: 0; max-width: 62ch; color: var(--body); }
 @media (max-width: 860px) { .links { display: none; } }
 @media (max-width: 520px) { .clock .cnt { display: none; } }
 
-/* sections: full-bleed rule on top, ticks where it crosses the column, number in the gutter */
+/* sections: full-bleed rule on top, ticks where it crosses the column */
 .sec { position: relative; border-top: 1px solid var(--line); }
 .wrap { position: relative; width: var(--col); margin: 0 auto; padding: 112px 48px; }
 .wrap::before, .wrap::after { content: ""; position: absolute; top: -5px; width: 9px; height: 9px; background: linear-gradient(var(--line2), var(--line2)) center / 1px 100% no-repeat, linear-gradient(var(--line2), var(--line2)) center / 100% 1px no-repeat; }
 .wrap::before { left: -5px; } .wrap::after { right: -5px; }
-.gut { position: absolute; top: 18px; left: 16px; }
-@media (min-width: 1180px) { .gut { left: -44px; top: 112px; } }
 .head { display: grid; gap: 14px; max-width: 640px; margin-bottom: 40px; }
 .label { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
@@ -311,7 +309,8 @@ legend { padding: 0; margin-bottom: 10px; }
 
 /* built with: plain mono cells in a bordered grid */
 .marks { list-style: none; margin: 24px 0 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
-.marks li { display: grid; place-items: center; height: 88px; border-left: 1px solid var(--line); font: 500 14px var(--mono); letter-spacing: .02em; }
+.marks li { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 104px; border-left: 1px solid var(--line); font: 500 12px var(--mono); letter-spacing: .02em; color: var(--muted); }
+.marks svg { width: 30px; height: 30px; }
 .marks li:first-child { border-left: 0; }
 @media (max-width: 640px) { .marks { grid-template-columns: repeat(2, minmax(0, 1fr)); } .marks li { border-left: 0; border-top: 1px solid var(--line); } .marks li:nth-child(even) { border-left: 1px solid var(--line); } .marks li:nth-child(-n+2) { border-top: 0; } .marks li:last-child { grid-column: 1 / -1; } }
 
