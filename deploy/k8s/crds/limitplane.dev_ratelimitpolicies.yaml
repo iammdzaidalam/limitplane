@@ -1,0 +1,95 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ratelimitpolicies.limitplane.dev
+spec:
+  group: limitplane.dev
+  scope: Namespaced
+  names:
+    kind: RateLimitPolicy
+    listKind: RateLimitPolicyList
+    plural: ratelimitpolicies
+    singular: ratelimitpolicy
+    shortNames: [rlp]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Applied
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Applied")].status
+        - name: Reason
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Applied")].reason
+        - name: Replicas
+          type: integer
+          jsonPath: .status.activeReplicas
+        - name: Anonymous
+          type: string
+          jsonPath: .spec.anonymous
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: The policy file format minus keys (API keys come from Tenant objects).
+          properties:
+            spec:
+              type: object
+              required: [tiers, anonymous]
+              properties:
+                tiers:
+                  type: object
+                  minProperties: 1
+                  additionalProperties:
+                    type: object
+                    required: [rate]
+                    properties:
+                      rate:
+                        type: object
+                        required: [limit, period]
+                        properties:
+                          limit: {type: integer, format: int64, minimum: 1}
+                          period: {type: string, pattern: '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$', description: 'Go duration, e.g. 1s or 1m'}
+                          burst: {type: integer, format: int64, minimum: 0, description: 'Bucket size; 0 means limit.'}
+                      monthly: {type: integer, format: int64, minimum: 0, description: 'Monthly cost units; 0 means no cap.'}
+                routes:
+                  type: array
+                  description: Longest prefix wins; unmatched paths cost 1.
+                  items:
+                    type: object
+                    required: [prefix, cost]
+                    properties:
+                      prefix: {type: string, pattern: '^/'}
+                      cost: {type: integer, format: int64, minimum: 1}
+                anonymous:
+                  type: string
+                  description: Tier for requests without a known API key, limited per client IP.
+                autopilot:
+                  type: object
+                  description: Accepted and validated by the schema; not applied yet (see docs/OPERATOR.md).
+                  properties:
+                    stormBlocks: {type: integer, minimum: 0}
+                    stormWindow: {type: string, pattern: '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'}
+                    banFor: {type: string, pattern: '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'}
+            status:
+              type: object
+              properties:
+                observedGeneration: {type: integer, format: int64}
+                activeReplicas: {type: integer, description: 'Replicas serving observedGeneration.'}
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type: {type: string}
+                      status: {type: string, enum: ["True", "False", "Unknown"]}
+                      reason: {type: string}
+                      message: {type: string}
+                      lastTransitionTime: {type: string, format: date-time}

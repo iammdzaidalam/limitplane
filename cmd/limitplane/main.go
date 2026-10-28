@@ -44,6 +44,8 @@ func run() error {
 	metricsKey := flag.String("metrics-key", os.Getenv("LIMITPLANE_METRICS_KEY"), "bearer key for /metrics (empty: public)")
 	trust := flag.Bool("trust-proxy", false, "trust X-Forwarded-For (only behind a proxy you control)")
 	failClosed := flag.Bool("fail-closed", false, "return 503 when the shared backend is down instead of falling back to local limits")
+	kubeMode := flag.Bool("kube", os.Getenv("LIMITPLANE_KUBE") == "1", "in-cluster operator mode: policy and tenants come from CRDs")
+	kubePolicy := flag.String("kube-policy", "default", "RateLimitPolicy to apply (--kube)")
 	flag.Parse()
 
 	cfg, err := loadConfig(*cfgPath)
@@ -71,10 +73,18 @@ func run() error {
 	}
 
 	store := policy.NewStore(cfg)
-	srv := server.New(server.Config{
+	sc := server.Config{
 		Policy: store, Limiter: lim, Quota: quota, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
-		TrustProxy: *trust, FailClosed: *failClosed, Dashboard: web.FS,
-	})
+		TrustProxy: *trust, FailClosed: *failClosed, Dashboard: web.FS, Kube: *kubeMode,
+	}
+	var op *operator
+	if *kubeMode {
+		if op, err = newOperator(store, quota, *kubePolicy); err != nil {
+			return err
+		}
+		sc.Leader = op.elector.IsLeader
+	}
+	srv := server.New(sc)
 
 	var up http.Handler
 	if *upstream != "" {
@@ -93,7 +103,11 @@ func run() error {
 	hubCtx, stopHub := context.WithCancel(context.Background())
 	defer stopHub()
 	go srv.Run(hubCtx)
-	if *cfgPath != "" {
+	if op != nil {
+		// --config, if given, is only the startup policy: the CRDs own it from here.
+		op.start(ctx, srv.Hub)
+		defer op.stop()
+	} else if *cfgPath != "" {
 		go store.Watch(ctx, *cfgPath, 2*time.Second, func(err error) { log.Printf("config reload: %v", err) })
 		go reloadOnHUP(ctx, store, *cfgPath)
 	}

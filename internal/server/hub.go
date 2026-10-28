@@ -211,6 +211,8 @@ type stats struct {
 	Series   []point          `json:"series"`
 	Degraded bool             `json:"degraded"`
 	Backend  string           `json:"backend"`
+	Kube     bool             `json:"kube"`
+	Leader   bool             `json:"leader"`
 }
 
 type tenantStats struct {

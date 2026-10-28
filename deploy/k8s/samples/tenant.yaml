@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: acme-key
+type: Opaque
+stringData:
+  apiKey: demo-pro-key
+---
+apiVersion: limitplane.dev/v1alpha1
+kind: Tenant
+metadata:
+  name: acme
+spec:
+  id: acme
+  tier: pro
+  keySecretRef: {name: acme-key, key: apiKey}

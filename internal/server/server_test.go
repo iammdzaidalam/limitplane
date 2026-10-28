@@ -121,7 +121,7 @@ func TestEndToEnd(t *testing.T) {
 		st = stats{}
 		json.NewDecoder(r.Body).Decode(&st)
 	}
-	if st.Total != 6 || st.Blocked != 1 || st.ByReason["burst"] != 1 || st.Backend != "memory" {
+	if st.Total != 6 || st.Blocked != 1 || st.ByReason["burst"] != 1 || st.Backend != "memory" || st.Kube || st.Leader {
 		t.Fatalf("stats %+v", st)
 	}
 	if st.Tenants[0].Tenant != "acme" || st.Tenants[0].MonthlyUsed != 5 || st.Tenants[0].MonthlyLimit != 1000 {

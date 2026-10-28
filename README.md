@@ -45,7 +45,11 @@ Numbers are in [BENCHMARKS.md](BENCHMARKS.md).
 ```bash
 make compose-up && make prove     # 2 replicas + Redis behind nginx; checks the limit is shared
 kubectl apply -k deploy/k8s/overlays/dev
+helm install limitplane deploy/helm/limitplane
 ```
+
+- [docs/DEPLOY.md](docs/DEPLOY.md): Compose, Kustomize, Helm, ingress and Gateway API.
+- [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events.
 
 ## Develop
 

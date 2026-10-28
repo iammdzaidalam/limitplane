@@ -39,7 +39,9 @@ type Config struct {
 	Backend    string // "memory" or "redis"
 	TrustProxy bool
 	FailClosed bool
-	Dashboard  fs.FS // nil disables GET /
+	Dashboard  fs.FS       // nil disables GET /
+	Kube       bool        // policy comes from CRDs (--kube)
+	Leader     func() bool // nil: not running leader election
 }
 
 type Server struct {
@@ -201,7 +203,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	st, per := s.Hub.snapshot(now)
-	st.Backend = s.cfg.Backend
+	st.Backend, st.Kube = s.cfg.Backend, s.cfg.Kube
+	if s.cfg.Leader != nil {
+		st.Leader = s.cfg.Leader()
+	}
 	cfg := s.cfg.Policy.Config()
 	seen := map[string]bool{}
 	add := func(id, tier string, label string, monthly bool) {
