@@ -1,0 +1,20 @@
+# ingress-nginx -> LimitPlane -> your app.
+# ingress-nginx sets X-Forwarded-For to the client address; run LimitPlane with --trust-proxy
+# (the chart default) so it limits per client instead of per ingress pod.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: limitplane
+  namespace: limitplane
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: limitplane
+                port: {number: 80}

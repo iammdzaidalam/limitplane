@@ -1,0 +1,102 @@
+{{- $admin := include "limitplane.adminPath" . -}}
+{{- $secret := include "limitplane.secretName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "limitplane.fullname" . }}
+  labels: {{- include "limitplane.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "limitplane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "limitplane.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Keys are read from env at startup, so roll the pods when the Secret changes.
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.operator.enabled }}
+      serviceAccountName: {{ include "limitplane.fullname" . }}
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # The image's USER is a name; kubelet needs a numeric id to verify runAsNonRoot.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: limitplane
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/etc/limitplane/config.json
+            {{- with .Values.upstream }}
+            - --upstream={{ . }}
+            {{- end }}
+            {{- if .Values.trustProxy }}
+            - --trust-proxy
+            {{- end }}
+            {{- if .Values.failClosed }}
+            - --fail-closed
+            {{- end }}
+            {{- if .Values.operator.enabled }}
+            - --kube
+            - --kube-policy={{ .Values.operator.policyName }}
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: LIMITPLANE_ADMIN_KEY
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: admin-key}}
+            - name: LIMITPLANE_METRICS_KEY
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: metrics-key, optional: true}}
+            - name: REDIS_URL
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: redis-url, optional: true}}
+            {{- if .Values.operator.enabled }}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: {{ $admin }}/healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: {{ $admin }}/healthz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/limitplane, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "limitplane.fullname" . }}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

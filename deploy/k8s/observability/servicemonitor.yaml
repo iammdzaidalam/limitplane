@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: limitplane
+  labels:
+    app: limitplane
+    # release: kube-prometheus-stack  # match your Prometheus serviceMonitorSelector
+spec:
+  selector:
+    matchLabels: {app: limitplane}
+  endpoints:
+    - port: http
+      path: /metrics # /_limitplane/metrics when --upstream is set
+      interval: 30s
+      # Required once metrics-key is set in limitplane-secrets:
+      # authorization:
+      #   type: Bearer
+      #   credentials: {name: limitplane-secrets, key: metrics-key}

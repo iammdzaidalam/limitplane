@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      },
+      "required": ["repository"]
+    },
+    "imagePullSecrets": {"type": "array"},
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "upstream": {"type": "string", "pattern": "^(https?://.+)?$"},
+    "trustProxy": {"type": "boolean"},
+    "failClosed": {"type": "boolean"},
+    "extraArgs": {"type": "array", "items": {"type": "string"}},
+    "policy": {
+      "type": "object",
+      "properties": {
+        "tiers": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "rate": {
+                "type": "object",
+                "properties": {
+                  "limit": {"type": "integer", "minimum": 1},
+                  "period": {"type": "string"},
+                  "burst": {"type": "integer", "minimum": 0}
+                },
+                "required": ["limit", "period"]
+              },
+              "monthly": {"type": "integer", "minimum": 0}
+            },
+            "required": ["rate"]
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"prefix": {"type": "string"}, "cost": {"type": "integer", "minimum": 1}},
+            "required": ["prefix"]
+          }
+        },
+        "keys": {"type": "object"},
+        "anonymous": {"type": "string"},
+        "autopilot": {"type": "object"}
+      },
+      "required": ["tiers"]
+    },
+    "existingSecret": {"type": "string"},
+    "adminKey": {"type": "string"},
+    "metricsKey": {"type": "string"},
+    "redisUrl": {"type": "string", "pattern": "^(rediss?://.+)?$"},
+    "operator": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "policyName": {"type": "string", "minLength": 1}
+      }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {"type": "string"},
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "size": {"type": "string"},
+            "storageClass": {"type": "string"}
+          }
+        },
+        "resources": {"type": "object"}
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {"enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "resources": {"type": "object"},
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minReplicas": {"type": "integer", "minimum": 1},
+        "maxReplicas": {"type": "integer", "minimum": 1},
+        "targetCPUUtilizationPercentage": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minAvailable": {"type": ["integer", "string"]}
+      }
+    },
+    "networkPolicy": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "interval": {"type": "string"},
+        "labels": {"type": "object"}
+      }
+    },
+    "prometheusRule": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "labels": {"type": "object"},
+        "blockRatio": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+      }
+    },
+    "podAnnotations": {"type": "object"},
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array"},
+    "affinity": {"type": "object"}
+  }
+}

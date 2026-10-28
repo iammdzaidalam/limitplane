@@ -1,0 +1,21 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "limitplane.fullname" . }}
+  labels:
+    {{- include "limitplane.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {{- include "limitplane.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ include "limitplane.adminPath" . }}/metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      authorization:
+        type: Bearer
+        credentials: {name: {{ include "limitplane.secretName" . }}, key: metrics-key}
+{{- end }}

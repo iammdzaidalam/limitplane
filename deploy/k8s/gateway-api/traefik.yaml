@@ -1,0 +1,15 @@
+# Traefik -> LimitPlane -> your app.
+# Assumes Traefik v3 with its CRDs, and LimitPlane runs in the limitplane namespace with
+# --upstream pointing at your app.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: limitplane
+  namespace: limitplane
+spec:
+  entryPoints: [web]
+  routes:
+    - kind: Rule
+      match: Host(`api.example.com`)
+      services:
+        - {name: limitplane, port: 80}

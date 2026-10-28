@@ -1,0 +1,24 @@
+{{- $name := include "limitplane.fullname" . -}}
+LimitPlane is running as {{ $name }} in namespace {{ .Release.Namespace }}.
+
+Admin key:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "limitplane.secretName" . }} -o jsonpath='{.data.admin-key}' | base64 -d; echo
+
+Dashboard:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $name }} 18080:{{ .Values.service.port }}
+  open http://localhost:18080{{ include "limitplane.adminPath" . }}/
+{{- if not .Values.upstream }}
+
+Demo mode: no upstream is set, so the built-in demo API answers under /v1/.
+Set --set upstream=http://my-app.my-ns.svc to protect a real service.
+{{- end }}
+{{- if and (not .Values.redis.enabled) (not .Values.redisUrl) (not .Values.existingSecret) }}
+
+WARNING: no Redis configured. Each replica keeps its own counters, so the effective limit
+is multiplied by the replica count. Set redis.enabled=true or redisUrl.
+{{- end }}
+{{- if .Values.operator.enabled }}
+
+Operator mode: create a RateLimitPolicy named "{{ .Values.operator.policyName }}" in this namespace.
+  kubectl -n {{ .Release.Namespace }} get rlp,tenants
+{{- end }}

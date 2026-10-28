@@ -1,0 +1,84 @@
+image:
+  repository: ghcr.io/iammdzaidalam/limitplane
+  tag: "" # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2
+
+# URL to protect. Empty runs the built-in demo API with the dashboard at /.
+# When set, the dashboard, /healthz and /metrics move under /_limitplane/.
+upstream: ""
+trustProxy: true  # honour X-Forwarded-For from the ingress in front
+failClosed: false # 503 instead of local fallback when Redis is down
+extraArgs: []
+
+# Policy file (same shape as limitplane.example.json). Hot-reloaded on change.
+# With operator.enabled it is only the bootstrap policy until a RateLimitPolicy is applied.
+policy:
+  tiers:
+    free: {rate: {limit: 10, period: 1s, burst: 20}, monthly: 10000}
+  routes:
+    - {prefix: /, cost: 1}
+  anonymous: free
+
+# Secret with keys admin-key, metrics-key and redis-url. When set, the chart creates no Secret
+# and the values below are ignored.
+existingSecret: ""
+adminKey: ""   # empty: generated once and kept across upgrades
+metricsKey: "" # empty: generated once and kept across upgrades
+redisUrl: ""   # empty: the bundled Redis when redis.enabled, else per-pod memory
+
+# Watch RateLimitPolicy/Tenant CRs, elect a leader and write status (needs the CRDs).
+operator:
+  enabled: false
+  policyName: default
+
+redis:
+  enabled: true
+  image: redis:7.4-alpine
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  requests: {cpu: 100m, memory: 64Mi}
+  limits: {cpu: 500m, memory: 128Mi}
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Lets only LimitPlane pods reach the bundled Redis.
+networkPolicy:
+  enabled: true
+
+# Needs the Prometheus Operator CRDs. Scrapes with the metrics key as a bearer token.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {} # e.g. {release: kube-prometheus-stack}
+
+prometheusRule:
+  enabled: false
+  labels: {}
+  blockRatio: 0.2 # alert when more than this share of requests is blocked
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

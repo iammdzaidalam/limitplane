@@ -1,0 +1,13 @@
+# Kustomize component: add it to an overlay with
+#   components: [../../observability]
+# Needs the Prometheus Operator CRDs (monitoring.coreos.com/v1).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - servicemonitor.yaml
+  - prometheusrule.yaml
+patches:
+  # The base Service has no labels, and a ServiceMonitor selects Services by label.
+  - target: {kind: Service, name: limitplane}
+    patch: |-
+      - {op: add, path: /metadata/labels, value: {app: limitplane}}

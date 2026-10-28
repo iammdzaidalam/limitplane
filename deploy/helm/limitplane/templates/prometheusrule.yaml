@@ -1,0 +1,41 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- $sel := include "limitplane.promSelector" . }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "limitplane.fullname" . }}
+  labels:
+    {{- include "limitplane.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: limitplane
+      rules:
+        - alert: LimitPlaneHighBlockRate
+          expr: |
+            sum(rate(limitplane_decisions_total{ {{- $sel }},reason=~"burst|monthly|banned"}[5m]))
+              / sum(rate(limitplane_decisions_total{ {{- $sel }}}[5m])) > {{ .Values.prometheusRule.blockRatio }}
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: More than {{ mulf .Values.prometheusRule.blockRatio 100 }}% of requests are being rate limited.
+        - alert: LimitPlaneRedisDegraded
+          expr: sum(rate(limitplane_degraded_total{ {{- $sel }}}[5m])) > 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: Redis is unreachable and replicas fall back to local limits, so the effective limit is multiplied by the replica count.
+        - alert: LimitPlaneBackendErrors
+          expr: sum(rate(limitplane_decisions_total{ {{- $sel }},reason="error"}[5m])) > 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: Redis is unreachable and fail-closed is returning 503s.
+        - alert: LimitPlaneTenantQuotaExhausted
+          expr: sum by (tenant) (increase(limitplane_decisions_total{ {{- $sel }},reason="monthly"}[15m])) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: Tenant {{ "{{ $labels.tenant }}" }} has used its monthly quota and is being blocked.
+{{- end }}

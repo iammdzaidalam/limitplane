@@ -1,0 +1,10 @@
+apiVersion: v2
+name: limitplane
+description: Rate-limiting gateway with per-tenant burst and monthly quotas, shared through Redis.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/iammdzaidalam/limitplane
+sources:
+  - https://github.com/iammdzaidalam/limitplane
+keywords: [rate-limit, gateway, quota, redis]
