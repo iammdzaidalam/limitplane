@@ -141,6 +141,47 @@ server, which doesn't depend on Redis.
   replica that decided them, and only the leader sends Events, so a ban decided on a follower has no
   Event. They are best effort.
 
+## Proof on a real cluster
+
+`make prove-operator` (needs docker, kind, kubectl and helm) creates a kind cluster, installs the
+Helm chart with `operator.enabled=true` and two replicas, and checks, through a port-forward to each
+pod:
+
+- both replicas run in kube mode as the chart's ServiceAccount, and no log line says `forbidden`;
+- the sample RateLimitPolicy and Tenant reach both replicas (`Applied=True`, `activeReplicas=2`), and
+  editing the CR changes both replicas' limits without a restart;
+- the API server's CRD schema refuses `limit: 0` on its own; a burst below a route's cost passes the
+  schema and is refused by the operator (`Applied=False, Invalid`, a `PolicyInvalid` Event) while the
+  last good policy keeps serving;
+- a Tenant whose Secret doesn't exist is `SecretNotFound` and harms no one, goes live when the Secret
+  appears, and deleting it revokes the key;
+- exactly one replica leads and the Lease agrees; deleting its pod moves the Lease (in about a second,
+  since the old leader releases it on SIGTERM) and there is still one leader;
+- 40 requests on each replica raise the Tenant's `monthlyUsed` by 80 (shared through Redis);
+- deleting the RateLimitPolicy keeps the current policy and marks Tenants `PolicyNotFound`.
+
+```
+PASS: chart installed: CRDs, RBAC, Redis and 2 replicas with --kube
+PASS: both replicas in kube mode, serving the bootstrap policy until a RateLimitPolicy exists
+PASS: RateLimitPolicy and Tenant (key from a Secret) live on both replicas; Applied=True, activeReplicas=2
+PASS: editing the CR changes both replicas' limits without a restart
+PASS: the API server's CRD schema refuses limit 0 before it reaches the operator
+  message: policy: tier "free": burst 3 < max route cost 5
+PASS: an invalid policy is refused (Applied=False Invalid, PolicyInvalid event) and the last good one keeps serving
+PASS: a Tenant without its Secret is not ready and harms no one; the Secret appearing makes it live; deleting it revokes the key
+PASS: exactly one leader (limitplane-744556fd8d-s4f5h), and the Lease agrees
+PASS: monthly usage is shared: 40 requests on each replica moved the Tenant's monthlyUsed from 9 to 89
+PASS: deleting the leader's pod moved the Lease to limitplane-744556fd8d-vm2c7 in 1s; still one leader, the replacement serves the policy
+PASS: deleting the RateLimitPolicy keeps the current policy serving and marks Tenants PolicyNotFound
+PASS: no RBAC errors in any replica's log
+all operator checks passed
+```
+
+It takes about 75s on a laptop once the kind node image is cached, and runs in CI on every push.
+The unit tests in `internal/kube` use an in-memory API server instead, for the cases a real cluster
+won't produce on demand: `410 Gone` mid-watch, update conflicts, two candidates racing for the Lease.
+`KEEP=1` leaves the cluster up to poke at.
+
 ## Debugging
 
 ```bash

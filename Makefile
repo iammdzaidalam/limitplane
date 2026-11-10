@@ -1,4 +1,4 @@
-.PHONY: build test bench lint run docker compose-up compose-down prove prove-cluster prove-authz prove-orgs
+.PHONY: build test bench lint run docker compose-up compose-down prove prove-cluster prove-authz prove-orgs prove-operator
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/limitplane ./cmd/limitplane
@@ -36,3 +36,6 @@ prove-authz: # LimitPlane as forward auth for real Envoy, nginx and Traefik cont
 
 prove-orgs: # two orgs on two replicas: shared directory, isolation, one org budget, revocation
 	./scripts/prove-orgs.sh
+
+prove-operator: # the operator on a real kind cluster via the Helm chart: RBAC, CRDs, status, failover
+	./scripts/prove-operator.sh

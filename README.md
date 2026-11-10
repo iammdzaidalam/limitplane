@@ -70,7 +70,7 @@ helm install limitplane deploy/helm/limitplane
 - [docs/ORGS.md](docs/ORGS.md): orgs, members and roles, scoped views, dashboard API keys, the shared org budget (`make prove-orgs`).
 - [docs/AI.md](docs/AI.md): explanations and ops chat, grounding and privacy, model options (`--ai`), what each org can see.
 - [docs/XDP.md](docs/XDP.md): the optional eBPF fast path that drops banned sources and floods at the NIC.
-- [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events.
+- [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events. Proven on a real kind cluster (`make prove-operator`, also in CI).
 
 ## Code map
 
@@ -96,5 +96,6 @@ make test    # go test -race ./...
 make lint    # go vet + gofmt
 make bench
 make prove-cluster   # 3-master Redis Cluster, two gateways
+make prove-operator  # the operator on a real kind cluster, installed with the Helm chart
 ./xdp/test.sh         # XDP proof in a privileged Docker container
 ```
