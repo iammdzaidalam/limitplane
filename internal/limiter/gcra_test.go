@@ -212,7 +212,7 @@ func TestShardCountDoesNotChangeDecisions(t *testing.T) {
 // sameShard is another key that lands in key's shard.
 func sameShard(l *Local, key string) string {
 	for _, k := range keys512() {
-		if k != key && l.shard(k) == l.shard(key) {
+		if k != key && l.shard(k, "") == l.shard(key, "") {
 			return k
 		}
 	}
@@ -220,7 +220,7 @@ func sameShard(l *Local, key string) string {
 }
 
 func has(l *Local, key string) bool {
-	s := l.shard(key)
+	s := l.shard(key, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.tat[key]

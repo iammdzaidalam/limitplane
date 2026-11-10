@@ -29,6 +29,12 @@ adminKey: ""   # empty: generated once and kept across upgrades
 metricsKey: "" # empty: generated once and kept across upgrades
 redisUrl: ""   # empty: the bundled Redis when redis.enabled, else per-pod memory
 
+# Organisations: members sign in with email and password, see only their org's tenants, and share
+# an optional monthly budget. Orgs and users live in Redis, so set redisUrl or redis.enabled.
+# Without signup, accounts are invite-only: the admin key (or an org owner) creates them.
+orgs:
+  signup: false
+
 # Watch RateLimitPolicy/Tenant CRs, elect a leader and write status (needs the CRDs).
 operator:
   enabled: false

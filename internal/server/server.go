@@ -10,7 +10,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"math"
+	"log"
 	"net/http"
 	"regexp"
 	"slices"
@@ -18,22 +18,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iammdzaidalam/limitplane/internal/ai"
 	"github.com/iammdzaidalam/limitplane/internal/autopilot"
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
+	"github.com/iammdzaidalam/limitplane/internal/org"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
 // AdminPrefix is where the admin plane lives in proxy mode.
 const AdminPrefix = "/_limitplane"
 
-const tokenTTL = 12 * time.Hour
-
-var loginRate = limiter.Rate{Limit: 5, Period: time.Minute, Burst: 5}
-
 type Config struct {
 	Policy     *policy.Store
-	Limits     limiter.Backend // burst, monthly and bans: memory, or Redis behind a fallback
+	Limits     limiter.Backend // burst, monthly, org budgets and bans: memory, or Redis behind a fallback
+	Dir        *org.Directory  // orgs, users, their tenants and keys; nil: an empty one in memory
+	Signup     bool            // anyone may create an org and become its owner (default: invite only)
 	AdminKey   string
 	MetricsKey string // empty: /metrics is public
 	Backend    string // "memory" or "redis"
@@ -45,37 +45,60 @@ type Config struct {
 	// Hooks for autopilot bans and 80% quota alerts. Called on the request or hub goroutine: don't block.
 	OnBan   func(autopilot.Ban)
 	OnAlert func(autopilot.Alert)
+	AI      ai.Config // model and options for explanations and ops chat; no Provider: rules only
 }
 
 type Server struct {
 	Hub     *Hub
 	Pilot   *autopilot.Pilot
 	Gateway *gateway.Gateway
+	ai      *aiPlane
 	cfg     Config
 	secret  []byte
 }
 
 func New(c Config) *Server {
+	if c.Dir == nil {
+		c.Dir = org.NewMemory()
+	}
 	s := &Server{cfg: c}
 	// Derived from the admin key so replicas sharing a key accept each other's tokens.
 	s.secret = mac([]byte(c.AdminKey), "limitplane-jwt")
-	s.Hub = NewHub(func(d gateway.Decision) { s.Pilot.Observe(d) }, func() map[string]string {
+	// A tenant's counters live under its org's hash tag, so when its org changes they follow. Every
+	// replica moves them when it learns of the change; a repeat finds nothing left to move.
+	c.Policy.OnMove(func(tenant, from, to string) {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := c.Limits.Move(ctx, tenant, from, to); err != nil {
+				log.Printf("orgs: moving %s's counters from org %q to %q: %v", tenant, from, to, err)
+			}
+		}()
+	})
+	s.Hub = NewHub(func(d gateway.Decision) { s.Pilot.Observe(d); s.ai.observe(d) }, func() map[string]string {
 		m := map[string]string{}
-		for _, t := range c.Policy.Config().Keys {
+		for _, t := range c.Policy.Tenants() {
 			m[t.ID] = t.Tier
 		}
 		return m
+	})
+	// Tenants made in the dashboard get their own stats label from their first request.
+	c.Dir.Notify(func(st *org.State) {
+		c.Policy.SetOrgs(st.Policy())
+		s.Hub.Refresh()
 	})
 	s.Pilot = autopilot.New(autopilot.Config{
 		Rules: autopilot.DefaultRules, Store: c.Limits,
 		OnBan: func(b autopilot.Ban) {
 			s.Hub.Publish("ban", b)
+			s.Hub.Publish("incident", s.ai.ban(b))
 			if c.OnBan != nil {
 				c.OnBan(b)
 			}
 		},
 		OnAlert: func(a autopilot.Alert) {
 			s.Hub.Publish("alert", a)
+			s.Hub.Publish("incident", s.ai.alert(a))
 			if c.OnAlert != nil {
 				c.OnAlert(a)
 			}
@@ -89,11 +112,15 @@ func New(c Config) *Server {
 		},
 		Lane: s.Pilot.Lane, TrustProxy: c.TrustProxy, FailClosed: c.FailClosed,
 	})
+	s.ai = newAI(s, c.AI)
 	return s
 }
 
-// Run drives the decision hub until ctx ends.
-func (s *Server) Run(ctx context.Context) { s.Hub.Run(ctx) }
+// Run drives the decision hub and the AI layer until ctx ends.
+func (s *Server) Run(ctx context.Context) {
+	go s.ai.run(ctx)
+	s.Hub.Run(ctx)
+}
 
 // Handler serves the admin plane plus traffic. upstream nil means demo mode:
 // admin at /, demo API under /v1. Otherwise admin moves under AdminPrefix and
@@ -133,30 +160,56 @@ func (s *Server) admin() http.Handler {
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 	m.HandleFunc("GET /metrics", s.metricsAuth)
 	m.HandleFunc("POST /api/login", s.login)
+	m.HandleFunc("GET /api/login", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]bool{"signup": s.cfg.Signup})
+	})
+	m.HandleFunc("POST /api/signup", s.signup)
+	// Every route below needs a token. Reads are scoped to the caller's org (visible); writes
+	// check the role in the org they touch (need), or are the platform admin's (sup).
 	api := func(pattern string, h http.HandlerFunc) { m.Handle(pattern, s.auth(h, false)) }
+	sup := func(pattern string, h http.HandlerFunc) { api(pattern, s.superOnly(h)) }
+	api("GET /api/me", s.getMe)
+	api("PUT /api/me/password", s.setPassword)
+	api("POST /api/me/revoke", s.revokeMe)
 	api("GET /api/stats", s.stats)
 	m.Handle("GET /api/events", s.auth(http.HandlerFunc(s.events), true))
 	api("GET /api/audit", s.audit)
-	api("GET /api/clients", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.Pilot.Clients()) })
-	api("GET /api/bans", func(w http.ResponseWriter, r *http.Request) {
-		bans, err := s.Pilot.Bans(r.Context())
-		if err != nil {
-			unavailable(w, err)
-			return
-		}
-		writeJSON(w, 200, bans)
-	})
-	api("POST /api/bans", s.ban)
+	api("GET /api/clients", s.clients)
+	api("GET /api/bans", s.bans)
+	// Bans are per client and hold for every tenant, so only the platform admin makes them.
+	sup("POST /api/bans", s.ban)
 	// {client...}: a CIDR ban has a slash in it.
-	api("DELETE /api/bans/{client...}", func(w http.ResponseWriter, r *http.Request) {
+	sup("DELETE /api/bans/{client...}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Pilot.Unban(r.Context(), r.PathValue("client")); err != nil {
 			banError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	api("GET /api/policy", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.cfg.Policy.Config()) })
-	api("PUT /api/policy", s.putPolicy)
+	api("GET /api/policy", s.getPolicy)
+	sup("PUT /api/policy", s.putPolicy)
+
+	api("GET /api/orgs", s.listOrgs)
+	sup("POST /api/orgs", s.createOrg)
+	api("GET /api/orgs/{org}", s.getOrg)
+	api("PATCH /api/orgs/{org}", s.updateOrg)
+	sup("DELETE /api/orgs/{org}", s.deleteOrg)
+	api("GET /api/orgs/{org}/members", s.listMembers)
+	api("POST /api/orgs/{org}/members", s.addMember)
+	api("PATCH /api/orgs/{org}/members/{user}", s.setRole)
+	api("DELETE /api/orgs/{org}/members/{user}", s.removeMember)
+	api("POST /api/orgs/{org}/members/{user}/revoke", s.revokeMember)
+	sup("GET /api/users", s.listUsers)
+	sup("POST /api/users", func(w http.ResponseWriter, r *http.Request) { s.addUser(w, r, "", org.Superadmin) })
+	sup("DELETE /api/users/{user}", func(w http.ResponseWriter, r *http.Request) { s.removeUser(w, r, r.PathValue("user")) })
+
+	api("GET /api/tenants", s.listTenants)
+	api("POST /api/tenants", s.createTenant)
+	api("DELETE /api/tenants/{tenant}", s.deleteTenant)
+	sup("PUT /api/tenants/{tenant}/org", s.placeTenant)
+	api("POST /api/tenants/{tenant}/keys", s.createKey)
+	api("DELETE /api/tenants/{tenant}/keys/{key}", s.deleteKey)
+	s.ai.routes(api)
 	if s.cfg.Dashboard != nil {
 		m.Handle("GET /", http.FileServerFS(s.cfg.Dashboard))
 	}
@@ -191,21 +244,6 @@ func secure(h http.Handler, policy string) http.Handler {
 	})
 }
 
-// auth requires a valid bearer token; query tokens only where headers can't be set (EventSource).
-func (s *Server) auth(h http.Handler, allowQuery bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok && allowQuery {
-			tok = r.URL.Query().Get("token")
-		}
-		if _, err := verifyJWT(s.secret, tok, time.Now()); err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
-
 // metricsAuth takes a static bearer key, since scrapers can't log in for a JWT.
 func (s *Server) metricsAuth(w http.ResponseWriter, r *http.Request) {
 	if k := s.cfg.MetricsKey; k != "" {
@@ -224,55 +262,39 @@ func equal(a, b string) bool {
 	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
 }
 
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	ip := gateway.ClientIP(r, s.cfg.TrustProxy)
-	res, err := s.cfg.Limits.Allow(r.Context(), "login:"+ip, loginRate, 1)
-	if err == nil && !res.Allowed {
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(res.RetryAfter.Seconds()))))
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
-		return
-	}
-	var body struct{ Key string }
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body) != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
-		return
-	}
-	if s.cfg.AdminKey == "" || !equal(body.Key, s.cfg.AdminKey) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid key"})
-		return
-	}
-	writeJSON(w, 200, map[string]string{"token": signJWT(s.secret, "admin", time.Now(), tokenTTL)})
-}
-
+// stats is the dashboard's numbers for the tenants in view: everything for the superadmin, or one
+// org's totals, series, tenants and budget.
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	st, per := s.Hub.snapshot(now)
+	o, all := scope(r)
+	st, per := s.Hub.snapshot(now, o)
 	st.Backend, st.Kube = s.cfg.Backend, s.cfg.Kube
 	if s.cfg.Leader != nil {
 		st.Leader = s.cfg.Leader()
 	}
-	cfg := s.cfg.Policy.Config()
-	seen := map[string]bool{}
-	add := func(id, tier string, label string, monthly bool) {
-		c := per[label]
-		t := tenantStats{Tenant: id, Tier: tier, Allowed: c.Allowed, Blocked: c.Blocked}
-		if lim := cfg.Tiers[tier].Monthly; monthly && lim > 0 {
-			t.MonthlyLimit = lim
-			if used, err := s.cfg.Limits.Used(r.Context(), id); err == nil {
-				t.MonthlyUsed = used
+	keep := s.visible(r)
+	st.Tenants = []tenantStats{}
+	for _, t := range s.cfg.Policy.Tenants() {
+		if !keep(t.ID) {
+			continue
+		}
+		c := per[t.ID]
+		ts := tenantStats{Tenant: t.ID, Tier: t.Tier, Org: t.Org, Allowed: c.Allowed, Blocked: c.Blocked}
+		if t.Monthly > 0 {
+			ts.MonthlyLimit = t.Monthly
+			if used, err := s.cfg.Limits.UsedIn(r.Context(), t.ID, t.Org); err == nil {
+				ts.MonthlyUsed = used
 			}
 		}
-		st.Tenants = append(st.Tenants, t)
+		st.Tenants = append(st.Tenants, ts)
 	}
-	for _, t := range cfg.Keys {
-		if !seen[t.ID] {
-			seen[t.ID] = true
-			add(t.ID, t.Tier, t.ID, true)
-		}
+	if all { // anonymous quota is per client IP, so no single monthly figure; it belongs to no org
+		c := per[anonLabel]
+		st.Tenants = append(st.Tenants, tenantStats{Tenant: policy.AnonTenant, Tier: s.cfg.Policy.Config().Anonymous, Allowed: c.Allowed, Blocked: c.Blocked})
 	}
-	slices.SortFunc(st.Tenants, func(a, b tenantStats) int { return strings.Compare(a.Tenant, b.Tenant) })
-	// Anonymous quota is per client IP, so no single monthly figure.
-	add(policy.AnonTenant, cfg.Anonymous, anonLabel, false)
+	if g, ok := s.cfg.Dir.Snapshot().Orgs[o]; ok {
+		st.Org = s.orgView(r, g)
+	}
 	writeJSON(w, 200, st)
 }
 
@@ -281,7 +303,44 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	if err != nil || n <= 0 {
 		n = 100
 	}
-	writeJSON(w, 200, s.Hub.Audit(min(n, auditSize)))
+	var keep func(gateway.Decision) bool
+	if _, all := scope(r); !all {
+		vis := s.visible(r)
+		keep = func(d gateway.Decision) bool { return vis(d.Tenant) }
+	}
+	writeJSON(w, 200, s.Hub.AuditOf(min(n, auditSize), keep))
+}
+
+// clients are the fingerprints of clients that sent the tenants in view traffic lately.
+func (s *Server) clients(w http.ResponseWriter, r *http.Request) {
+	cs := s.Pilot.Clients()
+	if _, all := scope(r); !all {
+		seen := s.Hub.ClientsOf(s.visible(r))
+		cs = slices.DeleteFunc(cs, func(c autopilot.Client) bool { return !seen[c.Client] })
+	}
+	writeJSON(w, 200, cs)
+}
+
+func (s *Server) bans(w http.ResponseWriter, r *http.Request) {
+	bans, err := s.Pilot.Bans(r.Context())
+	if err != nil {
+		unavailable(w, err)
+		return
+	}
+	if _, all := scope(r); !all {
+		bans = affecting(bans, s.Hub.ClientsOf(s.visible(r)))
+	}
+	writeJSON(w, 200, bans)
+}
+
+// getPolicy is the whole policy for the platform admin. Org members get tiers and routes, which
+// price their own traffic, but no API keys.
+func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request) {
+	c := s.cfg.Policy.Config()
+	if p, _ := caller(r); !p.super() {
+		c.Keys = map[string]policy.Tenant{}
+	}
+	writeJSON(w, 200, c)
 }
 
 func (s *Server) ban(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +381,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// Subscribe before flushing headers so a client that sees 200 can't miss the next event.
-	ch := s.Hub.Subscribe()
+	ch := s.Hub.Subscribe(s.eventFilter(r))
 	defer s.Hub.Unsubscribe(ch)
 	rc := http.NewResponseController(w)
 	h := w.Header()
@@ -345,6 +404,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		case msg := <-ch:
 			_, err = w.Write(msg)
 		case <-beat.C:
+			if p, _ := caller(r); !s.live(p) { // revoked: end the stream; the reconnect gets a 401
+				return
+			}
 			_, err = io.WriteString(w, ": ping\n\n")
 		}
 		if err != nil || rc.Flush() != nil {
@@ -361,6 +423,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		n = -1 // unknown: leave the gauge out rather than report 0
 	}
 	s.Hub.writeMetrics(w, n, time.Now())
+	s.ai.writeMetrics(w)
 }
 
 // banError is 400 for a ban the store refuses, else 503.

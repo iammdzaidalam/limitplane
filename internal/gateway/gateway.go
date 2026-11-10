@@ -58,8 +58,8 @@ func (g *Gateway) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// Check decides one request for method and path, with one Meter.Check: ban -> monthly -> burst,
-// and nothing is spent unless all three pass. So a burst reject never bills the plan and a monthly
+// Check decides one request for method and path, with one Meter.Check: ban -> monthly -> the org's
+// budget -> burst, and nothing is spent unless all of them pass. So a burst reject never bills the plan and a monthly
 // reject never uses up burst. Monthly is checked before burst because it is the stickier answer: a
 // tenant out of quota is told to wait for the 1st, not to retry in two seconds.
 // It reports the decision to OnDecision and returns it with the time until the burst refills.
@@ -69,7 +69,7 @@ func (g *Gateway) Check(r *http.Request, method, path string) (Decision, time.Du
 	d := Decision{Time: now, Client: ip, Method: method, Path: clean(path)}
 
 	m := g.c.Policy.Resolve(r.Header.Get(KeyHeader), d.Path)
-	d.Tenant, d.Tier, d.Cost = m.Tenant, m.Tier, m.Cost
+	d.Tenant, d.Tier, d.Cost, d.Org = m.Tenant, m.Tier, m.Cost, m.Org
 	key := m.Tenant
 	if m.Anon {
 		key = "anon:" + ip
@@ -80,7 +80,7 @@ func (g *Gateway) Check(r *http.Request, method, path string) (Decision, time.Du
 		m.Rate.Burst, d.Lane = max(m.Lanes[l], m.Cost), l.String()
 	}
 
-	res, err := g.c.Meter.Check(r.Context(), limiter.Request{Client: ip, Key: key, Rate: m.Rate, Cost: m.Cost, Month: m.Month})
+	res, err := g.c.Meter.Check(r.Context(), limiter.Request{Client: ip, Key: key, Rate: m.Rate, Cost: m.Cost, Month: m.Month, Org: m.Org, OrgMonth: m.OrgMonth})
 	failed := err != nil
 	if failed && !g.c.FailClosed {
 		res = limiter.Result{Allowed: true, Limit: m.Rate.Burst, Remaining: m.Rate.Burst, Degraded: true}
@@ -97,6 +97,10 @@ func (g *Gateway) Check(r *http.Request, method, path string) (Decision, time.Du
 		d.Reason, reset = ReasonBanned, d.RetryAfter
 	case res.Reason == limiter.Monthly:
 		d.Reason, d.Limit, d.Remaining = ReasonMonthly, m.Month, max(0, m.Month-res.Used)
+		d.RetryAfter = nextMonth(now).Sub(now)
+		reset = d.RetryAfter
+	case res.Reason == limiter.OrgMonthly: // the same answer as monthly, about the org's budget
+		d.Reason, d.Limit, d.Remaining = ReasonOrg, m.OrgMonth, max(0, m.OrgMonth-res.OrgUsed)
 		d.RetryAfter = nextMonth(now).Sub(now)
 		reset = d.RetryAfter
 	case res.Reason == limiter.Burst:
@@ -162,6 +166,8 @@ func message(d Decision, retry int64) string {
 		return fmt.Sprintf("Too many requests for the %s tier (this route costs %d units). Retry in %ds.", d.Tier, d.Cost, retry)
 	case ReasonMonthly:
 		return fmt.Sprintf("The %s plan's monthly quota of %d units is used up. It resets on the 1st (UTC).", d.Tier, d.Limit)
+	case ReasonOrg:
+		return fmt.Sprintf("The %s organisation's shared monthly budget of %d units is used up. It resets on the 1st (UTC).", d.Org, d.Limit)
 	case ReasonBanned:
 		return fmt.Sprintf("This client is temporarily blocked for abusive traffic. Retry in %ds.", retry)
 	}

@@ -46,7 +46,7 @@ func TestRedisCheckReplies(t *testing.T) {
 	l := NewRedis(c, nil)
 	q := Request{Key: "acme", Rate: Rate{Limit: 10_000_000, Period: time.Second}, Cost: 1, Month: -5}
 
-	reply.Store("*5\r\n:0\r\n:9\r\n:0\r\n:100\r\n:0\r\n")
+	reply.Store("*6\r\n:0\r\n:9\r\n:0\r\n:100\r\n:0\r\n:0\r\n")
 	res := mustCheck(t, l, q)
 	if !res.Allowed || res.Reason != OK || res.Limit != 10_000_000 || res.Remaining != 9 || res.ResetAfter != 100*time.Microsecond {
 		t.Fatalf("ok: %+v", res)
@@ -56,12 +56,17 @@ func TestRedisCheckReplies(t *testing.T) {
 		t.Fatalf("args %q", a)
 	}
 
-	reply.Store("*5\r\n:3\r\n:0\r\n:0\r\n:0\r\n:42\r\n")
+	reply.Store("*6\r\n:3\r\n:0\r\n:0\r\n:0\r\n:42\r\n:0\r\n")
 	if res := mustCheck(t, l, q); res.Allowed || res.Reason != Monthly || res.Limit != 0 || res.Used != 42 {
 		t.Fatalf("monthly: %+v", res)
 	}
 
-	for _, bad := range []string{"*5\r\n:0\r\n:0\r\n$1\r\nx\r\n:0\r\n:0\r\n", "*4\r\n:0\r\n:0\r\n:0\r\n:0\r\n", "$2\r\nok\r\n", "-BUSY script\r\n"} {
+	reply.Store("*6\r\n:4\r\n:0\r\n:0\r\n:0\r\n:0\r\n:99\r\n")
+	if res := mustCheck(t, l, q); res.Allowed || res.Reason != OrgMonthly || res.Limit != 0 || res.OrgUsed != 99 {
+		t.Fatalf("org monthly: %+v", res)
+	}
+
+	for _, bad := range []string{"*6\r\n:0\r\n:0\r\n$1\r\nx\r\n:0\r\n:0\r\n:0\r\n", "*5\r\n:0\r\n:0\r\n:0\r\n:0\r\n:0\r\n", "$2\r\nok\r\n", "-BUSY script\r\n"} {
 		reply.Store(bad)
 		if _, err := l.Check(ctx, q); err == nil {
 			t.Errorf("reply %q: want error", bad)

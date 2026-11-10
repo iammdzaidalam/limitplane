@@ -105,7 +105,7 @@ func TestRedisClusterIntegration(t *testing.T) {
 		if res := mustCheck(t, l, Request{Key: key, Rate: Rate{Limit: 1, Period: time.Minute, Burst: 2}, Cost: 1, Month: 10}); !res.Allowed || res.Used != 1 {
 			t.Fatalf("%s: %+v", key, res)
 		}
-		owners[cv.owner[redisx.Slot(tag(key))]]++
+		owners[cv.owner[redisx.Slot(tag(key, ""))]]++
 	}
 	if len(owners) != len(cv.addr) || len(owners) < 3 {
 		t.Fatalf("tenants per master %v", owners)
@@ -116,7 +116,7 @@ func TestRedisClusterIntegration(t *testing.T) {
 	for range 3 {
 		mustCheck(t, l, q)
 	}
-	slot := redisx.Slot(tag(q.Key))
+	slot := redisx.Slot(tag(q.Key, ""))
 	src := cv.owner[slot]
 	dst := other(cv, src)
 	begin(slot, src, dst)
@@ -137,15 +137,15 @@ func TestRedisClusterIntegration(t *testing.T) {
 	var key2 string
 	for i := 0; ; i++ {
 		key2 = uniq("ask" + strconv.Itoa(i) + "-")
-		if s := redisx.Slot(tag(key2)); count(cv.owner[s], s) == 0 {
+		if s := redisx.Slot(tag(key2, "")); count(cv.owner[s], s) == 0 {
 			break
 		}
 	}
-	slot2 := redisx.Slot(tag(key2))
+	slot2 := redisx.Slot(tag(key2, ""))
 	src2 := cv.owner[slot2]
 	dst2 := other(cv, src2)
 	begin(slot2, src2, dst2)
-	if _, err := c.Do(ctx, "SET", tag(key2)+"x", "1", "PX", 60000); err != nil {
+	if _, err := c.Do(ctx, "SET", tag(key2, "")+"x", "1", "PX", 60000); err != nil {
 		t.Fatalf("SET via ASK: %v", err)
 	}
 	if n, err := l.Used(ctx, key2); err != nil || n != 0 {

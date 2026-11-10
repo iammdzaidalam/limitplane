@@ -1,4 +1,4 @@
-.PHONY: build test bench lint run docker compose-up compose-down prove prove-cluster prove-authz
+.PHONY: build test bench lint run docker compose-up compose-down prove prove-cluster prove-authz prove-orgs
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/limitplane ./cmd/limitplane
@@ -33,3 +33,6 @@ prove-cluster: # 3-master Redis Cluster, two gateways: shared limit, instant ban
 
 prove-authz: # LimitPlane as forward auth for real Envoy, nginx and Traefik containers
 	./scripts/prove-authz.sh
+
+prove-orgs: # two orgs on two replicas: shared directory, isolation, one org budget, revocation
+	./scripts/prove-orgs.sh

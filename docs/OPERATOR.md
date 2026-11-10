@@ -52,6 +52,7 @@ metadata: {name: acme}
 spec:
   id: acme
   tier: pro
+  org: acme                                     # optional: an org from the org directory (docs/ORGS.md)
   keySecretRef: {name: acme-key, key: apiKey}   # API keys live in Secrets, never in the CR
 ```
 
@@ -131,6 +132,10 @@ server, which doesn't depend on Redis.
   it changes. Absent fields keep the defaults (20 blocks in 10s, ban for 5m); `stormBlocks: 0` turns
   storm bans off. A value autopilot can't use (a zero window or ban with blocks set) makes the policy
   `Applied=False, Invalid`, like any other spec error, and the last good rules stay.
+- `spec.org` places the tenant in that org: its members see it in the dashboard, and it spends from
+  the org's shared monthly budget. An invalid id is `InvalidSpec`, the same `spec.id` in two orgs is
+  `OrgConflict`. Orgs themselves (members, budgets) live in the org directory, not in a CRD; see
+  [ORGS.md](ORGS.md#kubernetes).
 - Bans themselves are shared through Redis, so a ban decided on any replica holds on all of them. The
   `TenantBanned` and `QuotaAlert` Events come through `server.Config.OnBan`/`OnAlert` hooks on the
   replica that decided them, and only the leader sends Events, so a ban decided on a follower has no

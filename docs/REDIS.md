@@ -22,16 +22,25 @@ path doesn't change: one extra nil check per command.
 |---|---|---|
 | `lp:{acme}:r` | string: GCRA theoretical arrival time, PX expiry | slot of `acme` |
 | `lp:{acme}:q:2026-10` | counter: monthly spend, 35-day expiry | slot of `acme` |
+| `lp:{org:corp}:t:acme:r`, `lp:{org:corp}:t:acme:q:2026-10` | the same, for tenant `acme` in org `corp` | slot of `org:corp` |
+| `lp:{org:corp}:budget:2026-10` | counter: the org's monthly spend, 35-day expiry | slot of `org:corp` |
 | `lp:bans` | hash: client → `"<expiry ms> <reason>"` | one slot |
 | channel `lp:bans` | pub/sub: `ban <client> <ttl ms> <reason>`, `unban <client>` | broadcast |
+| `lp:{dir}:orgs`, `:users`, `:tenants`, `:keys` | hashes: id → JSON record of the org directory | slot of `dir` |
+| `lp:{dir}:v` | counter: the directory's version, compared and bumped by every commit | slot of `dir` |
+| channel `lp:dir` | pub/sub: the new version after each commit | broadcast |
 
 A tenant's keys share a hash tag, so the per-request script touches one slot and works unchanged on a
-Cluster. Different tenants spread over all masters.
+Cluster. Different tenants spread over all masters. A tenant in an org carries the org's tag instead
+of its own, next to the org's budget counter, so the shared budget is checked in the same one-slot
+script; all of an org's tenants then share a slot. Tenants without an org keep the old layout, so
+nothing moves on upgrade. When a tenant's org changes, every replica folds its month's spend from
+the old key into the new one (two scripts, since the slots differ). See [ORGS.md](ORGS.md#the-org-budget).
 
 ## The per-request path
 
-One `EVALSHA` per request runs the monthly cap and GCRA, then writes both counters, atomically, on
-Redis's clock. Bans are not in the script any more. Before the script runs, the gateway checks bans
+One `EVALSHA` per request runs the monthly cap, the org's budget (for a tenant in an org) and GCRA,
+then writes the counters, atomically, on Redis's clock. Bans are not in the script any more. Before the script runs, the gateway checks bans
 in process: an exact-IP map lookup, then one lookup per CIDR length in use (8 to 40 ns).
 
 That is the Cluster fix. The old script took the client's ban key (`lp:ban:<ip>`) next to the tenant's

@@ -244,10 +244,13 @@ func (f *failing) Check(context.Context, Request) (Result, error) {
 	f.calls.Add(1)
 	return Result{}, errDown
 }
-func (f *failing) Used(context.Context, string) (int64, error) { return 0, errDown }
-func (f *failing) Ban(context.Context, Ban) error              { return errDown }
-func (f *failing) Unban(context.Context, string) error         { return errDown }
-func (f *failing) Bans(context.Context) ([]Ban, error)         { return nil, errDown }
+func (f *failing) Used(context.Context, string) (int64, error)           { return 0, errDown }
+func (f *failing) UsedIn(context.Context, string, string) (int64, error) { return 0, errDown }
+func (f *failing) OrgUsed(context.Context, string) (int64, error)        { return 0, errDown }
+func (f *failing) Move(context.Context, string, string, string) error    { return errDown }
+func (f *failing) Ban(context.Context, Ban) error                        { return errDown }
+func (f *failing) Unban(context.Context, string) error                   { return errDown }
+func (f *failing) Bans(context.Context) ([]Ban, error)                   { return nil, errDown }
 
 func TestFallback(t *testing.T) {
 	p := &failing{}

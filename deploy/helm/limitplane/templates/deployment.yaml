@@ -52,6 +52,9 @@ spec:
             {{- if .Values.failClosed }}
             - --fail-closed
             {{- end }}
+            {{- if .Values.orgs.signup }}
+            - --signup
+            {{- end }}
             {{- if .Values.authz.enabled }}
             - --authz-addr=:{{ .Values.authz.port }}
             {{- end }}

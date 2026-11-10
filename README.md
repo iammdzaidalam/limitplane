@@ -40,6 +40,8 @@ and a JSON body that says why.
 - **Redis down:** a circuit breaker routes to the local limiter and marks decisions `degraded`. Each replica then gets 1/n of the budget (n from `--replicas` / `LIMITPLANE_REPLICAS`, or counted from heartbeat Leases with `--kube`), so the fleet still admits about one budget. A Redis that isn't up at startup is retried in the background instead of failing the boot. `--fail-closed` returns 503 instead.
 - **Shared bans:** a ban (IP or CIDR) made by any replica, or from the dashboard, holds on all of them. It is written to one Redis hash and published on a channel every replica subscribes to, so it arrives in about a millisecond; a 2s sync repairs anything missed. Requests check bans in process (one map lookup per prefix length in use), so a banned flood never reaches Redis and the script never needs a cross-slot key. Bans made while Redis is down are pushed, with their remaining TTL, when it is back.
 - **Autopilot:** bans a client after repeated burst blocks, alerts at 80% of a monthly quota (also exported as `limitplane_quota_used_ratio`), and labels clients (human, bot, crawler, retry bug) from request timing. The labels are a heuristic, not a model. A tier can opt in to lanes (`"lanes": {"human": 2, "retry_bug": 0.25}`), which scale only the client's burst tolerance: the label is easy to game, so it may reshape bursts but never raise the sustained rate or the monthly quota.
+- **Organisations:** owners, admins and viewers sign in with email and password (PBKDF2, revocable tokens) and see only their org's tenants; an org's optional monthly budget is shared by its tenants and checked in the same Lua call. See [docs/ORGS.md](docs/ORGS.md).
+- **Explain and ask:** "why was this blocked?" for any decision, client or tenant, and an ops chat over remembered incidents (bans, storms, quota alerts, outages, policy changes). Rules write every answer; a model (Anthropic, or any OpenAI-compatible API) is optional and may only rephrase cited facts, with client IPs hashed. Scoped to the caller's org like every other read. See [docs/AI.md](docs/AI.md).
 - **Hot reload:** the policy is validated, then swapped atomically (file change or `SIGHUP`).
 - `X-Forwarded-For` is trusted only with `--trust-proxy`, and then only the right-most untrusted hop.
 
@@ -65,6 +67,8 @@ helm install limitplane deploy/helm/limitplane
 - [docs/DEPLOY.md](docs/DEPLOY.md): Compose, Kustomize, Helm, ingress and Gateway API.
 - [docs/AUTHZ.md](docs/AUTHZ.md): forward auth, so Envoy, ingress-nginx or Traefik ask LimitPlane per request and the traffic goes straight to your app (`--authz-addr`, `make prove-authz`).
 - [docs/REDIS.md](docs/REDIS.md): single node vs Cluster, key layout, how bans propagate, outage behaviour.
+- [docs/ORGS.md](docs/ORGS.md): orgs, members and roles, scoped views, dashboard API keys, the shared org budget (`make prove-orgs`).
+- [docs/AI.md](docs/AI.md): explanations and ops chat, grounding and privacy, model options (`--ai`), what each org can see.
 - [docs/XDP.md](docs/XDP.md): the optional eBPF fast path that drops banned sources and floods at the NIC.
 - [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events.
 
@@ -77,6 +81,8 @@ helm install limitplane deploy/helm/limitplane
 | `internal/gateway` | the middleware: who, cost, check, headers |
 | `internal/policy` | policy file, validation, atomic hot swap |
 | `internal/autopilot` | storm bans, quota alerts, client labels |
+| `internal/org` | orgs, users, roles, dashboard keys: memory, file or Redis |
+| `internal/ai` | explanations, incident memory (BM25), ops chat, model clients |
 | `internal/server` | admin API, JWT, SSE hub, metrics, dashboard |
 | `internal/kube` | stdlib Kubernetes client, watches, Lease election |
 | `web/`, `site/` | dashboard (embedded) and landing page, no build step |

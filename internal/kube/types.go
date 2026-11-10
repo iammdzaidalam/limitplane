@@ -55,6 +55,7 @@ type Tenant struct {
 type TenantSpec struct {
 	ID           string `json:"id"`
 	Tier         string `json:"tier"`
+	Org          string `json:"org,omitempty"` // an org id from the org directory; empty: none
 	KeySecretRef struct {
 		Name string `json:"name"`
 		Key  string `json:"key"`

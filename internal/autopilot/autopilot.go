@@ -231,6 +231,17 @@ type Client struct {
 	Burst      int64     `json:"burst,omitempty"` // the burst that request got
 }
 
+// Client is one client's fingerprint, if it is tracked.
+func (p *Pilot) Client(id string) (Client, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.clients[id]
+	if !ok {
+		return Client{}, false
+	}
+	return e.Value.(*track).snapshot(time.Now()), true
+}
+
 // Clients lists fingerprints, busiest first.
 func (p *Pilot) Clients() []Client {
 	now := time.Now()

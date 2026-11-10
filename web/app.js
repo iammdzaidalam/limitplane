@@ -64,18 +64,31 @@ const inRange = (t, ip) => {
 // the server routes it with {client...}, and proxies that reject %2F never see one
 const banPath = client => 'bans/' + client.split('/').map(encodeURIComponent).join('/')
 
-const session = {
-  get() { try { return sessionStorage.getItem('lp-token') } catch { return null } },
-  set(v) { try { v ? sessionStorage.setItem('lp-token', v) : sessionStorage.removeItem('lp-token') } catch {} },
-}
+const store = k => ({
+  get() { try { return sessionStorage.getItem(k) } catch { return null } },
+  set(v) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k) } catch {} },
+})
+const session = store('lp-token'), orgStore = store('lp-org')
 let token = session.get()
+
+// who is signed in: {user, email, org, orgName, role}; role is superadmin, owner, admin or viewer
+let me = null
+const rank = { viewer: 1, admin: 2, owner: 3 }
+const isSuper = () => me?.role === 'superadmin'
+const can = role => isSuper() || (rank[me?.role] || 0) >= rank[role]
+// the org in view: the superadmin's pick from the switcher ('' = all), else the member's own
+let scopeOrg = orgStore.get() || ''
+const viewOrg = () => (isSuper() ? scopeOrg : me?.org || '')
+// scoped reads carry the superadmin's pick; members' are scoped by the server regardless
+const orgQ = path => (isSuper() && scopeOrg ? path + (path.includes('?') ? '&' : '?') + 'org=' + encodeURIComponent(scopeOrg) : path)
+const enc = encodeURIComponent
 
 async function api(path, opts = {}) {
   const r = await fetch('api/' + path, {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...(token && { Authorization: 'Bearer ' + token }) },
   })
-  if (r.status === 401 && path !== 'login') { logout(); throw new Error('session expired') }
+  if (r.status === 401 && path !== 'login' && path !== 'signup') { logout(); throw new Error('session expired') }
   const text = await r.text()
   let body = text
   try { body = JSON.parse(text) } catch {}
@@ -103,17 +116,49 @@ $('#theme').onclick = toggleTheme
 if (!/Mac|iPhone|iPad/.test(navigator.platform)) $$('.mod').forEach(e => { e.textContent = 'Ctrl ' })
 $('#cmdk').title = `Command palette (${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'}K)`
 
-// auth
+// auth: email and password, the admin key, or (when the server allows it) a new org
+let loginMode = 'user', signupOn = false
+function setMode(m) {
+  loginMode = m
+  const key = m === 'key', up = m === 'signup'
+  $('#fUser').hidden = key; $('#fKey').hidden = !key
+  $('#lOrgL').hidden = !up
+  $('#password').autocomplete = up ? 'new-password' : 'current-password'
+  $('#loginTitle').replaceChildren(up ? 'Create an org on ' : 'Sign in to ', h('em', {}, 'LimitPlane'))
+  $('#loginSub').textContent = key ? 'Use the admin key the gateway was started with.' : up ? 'You become its owner and can invite the rest of your team.' : 'Use your email and password.'
+  $('#userGo').textContent = up ? 'Create org' : 'Sign in'
+  $('#modeKey').textContent = key ? 'Use email and password' : 'Use the admin key'
+  $('#modeSignup').hidden = !signupOn || key
+  $('#modeSignup').textContent = up ? 'I have an account' : 'Create an org'
+  $('#loginMsg').textContent = ''
+  ;(key ? $('#key') : up ? $('#lOrg') : $('#email')).focus()
+}
+$('#modeKey').onclick = () => setMode(loginMode === 'key' ? 'user' : 'key')
+$('#modeSignup').onclick = () => setMode(loginMode === 'signup' ? 'user' : 'signup')
 $('#loginForm').onsubmit = async e => {
   e.preventDefault()
-  $('#loginMsg').textContent = ''
+  const msg = $('#loginMsg')
+  msg.textContent = ''
+  let path = 'login', body
+  if (loginMode === 'key') body = { key: $('#key').value }
+  else {
+    body = { email: $('#email').value.trim(), password: $('#password').value }
+    if (loginMode === 'signup') { path = 'signup'; body.org = $('#lOrg').value.trim() }
+    const miss = loginMode === 'signup' && !body.org ? 'lOrg' : !body.email ? 'email' : !body.password ? 'password' : ''
+    if (miss) { msg.textContent = 'Fill in every field.'; return $('#' + miss).focus() }
+  }
   try {
-    token = (await api('login', { method: 'POST', body: JSON.stringify({ key: $('#key').value }) })).token
-    session.set(token)
+    signedIn(await api(path, { method: 'POST', body: JSON.stringify(body) }))
+    $('#password').value = ''; $('#key').value = ''
     start()
   } catch (err) {
-    $('#loginMsg').textContent = err.message || 'Sign in failed.'
+    msg.textContent = err.message || 'Sign in failed.'
   }
+}
+function signedIn(s) {
+  token = s.token
+  session.set(token)
+  me = { user: s.user, email: s.email, org: s.org, orgName: s.orgName, role: s.role }
 }
 $('#logout').onclick = () => logout()
 $('#keyShow').onclick = () => {
@@ -125,7 +170,10 @@ $('#keyShow').onclick = () => {
 let timers = [], es
 function logout() {
   token = null
+  me = null
   session.set(null)
+  scopeOrg = ''; orgStore.set(null); orgInfo = null; members = null; otenants = []; orgs = []
+  for (const k in loaded) loaded[k] = false
   timers.forEach(clearInterval)
   timers = []
   es?.close()
@@ -137,19 +185,37 @@ function logout() {
 function show(authed) {
   $('#login').hidden = authed
   $('#main').hidden = !authed
-  for (const id of ['tabs', 'logout', 'helpBtn', 'cmdk']) $('#' + id).hidden = !authed
+  for (const id of ['tabs', 'logout', 'helpBtn', 'cmdk', 'whoami']) $('#' + id).hidden = !authed
   $('[data-tab=try]').hidden = proxied
-  if (!authed) { $('#key').type = 'password'; $('#keyShow').setAttribute('aria-pressed', false); $('#key').focus() }
+  if (authed) return roleUI()
+  $('#key').type = 'password'; $('#keyShow').setAttribute('aria-pressed', false)
+  setMode(loginMode)
+}
+
+// role-aware chrome: the server enforces all of it, this only hides what would be refused
+function roleUI() {
+  const sup = isSuper()
+  $('[data-tab=policy]').hidden = !sup
+  $('#banForm').hidden = $('#banMsg').hidden = !sup
+  $('#dBan').hidden = !sup
+  $('#orgPick').hidden = !sup
+  const who = $('#whoami')
+  who.textContent = [me.user === 'admin' ? 'admin key' : me.email, me.role, me.orgName || me.org].filter(Boolean).join(' · ')
+  who.title = `Signed in as ${me.email || 'the admin key'}, ${me.role}${me.org ? ' in ' + (me.orgName || me.org) : ', every org'}`
+  $('[data-tab=org]').textContent = sup ? 'Orgs' : 'Org'
 }
 
 // views
 const views = $$('[data-view]').map(e => e.dataset.view)
+const allowed = v => views.includes(v) && !(v === 'try' && proxied) && !(v === 'policy' && !isSuper())
+const shownViews = () => views.filter(allowed)
 function route(focus) {
   let v = location.hash.replace(/^#\//, '')
-  if (!views.includes(v) || (v === 'try' && proxied)) v = 'overview'
+  if (!allowed(v)) v = 'overview'
   $$('[data-view]').forEach(e => { e.hidden = e.dataset.view !== v })
   $$('[data-tab]').forEach(a => a.dataset.tab === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'))
   document.title = v[0].toUpperCase() + v.slice(1) + ' · LimitPlane'
+  if (v === 'org') loadOrgView()
   draw()
   const a = document.activeElement
   if (focus && (a === document.body || a.closest('nav'))) $('#h-' + v).focus({ preventScroll: true })
@@ -157,13 +223,32 @@ function route(focus) {
 addEventListener('hashchange', () => route(true))
 $('.skip').onclick = e => { e.preventDefault(); $('#main').focus() }
 
-function start() {
+async function start() {
+  if (!me) {
+    try { me = await api('me') } catch { return logout() }
+  }
+  if (!isSuper()) scopeOrg = ''
   show(true)
   route()
   refresh(true)
   loadPolicy()
+  loadOrgs()
   loadAudit().finally(connect)
   timers.push(setInterval(refresh, 4000), setInterval(tick, 1000))
+}
+
+// the superadmin's org switcher: every scoped read and the live stream follow it
+$('#orgPick').onchange = e => switchOrg(e.target.value)
+function switchOrg(id) {
+  scopeOrg = id
+  orgStore.set(id)
+  $('#orgPick').value = id
+  buf = []; els.clear(); $('#feed').replaceChildren(); members = null
+  for (const k of ['tenants', 'clients', 'bans', 'otenants']) loaded[k] = false
+  $('#otenants').dataset.sig = ''
+  refresh(true)
+  loadAudit().finally(connect)
+  if (location.hash === '#/org') loadOrgView()
 }
 
 function tick() {
@@ -196,9 +281,12 @@ function failed(id, what, reason) {
 }
 
 async function refresh(seed) {
-  const [s, c, b] = await Promise.allSettled([api('stats'), api('clients'), api('bans')])
+  const [s, c, b, t] = await Promise.allSettled([api(orgQ('stats')), api(orgQ('clients')), api(orgQ('bans')), api(orgQ('tenants'))])
+  if (t.status === 'fulfilled') { otenants = t.value || []; loaded.otenants = true; renderOrgTenants() }
   if (s.status === 'fulfilled') {
     const v = s.value
+    orgInfo = v.org || null
+    renderBudget()
     totals = { total: v.total, allowed: v.allowed, blocked: v.blocked }
     degraded = v.degraded
     cluster = { backend: v.backend, kube: !!v.kube, leader: !!v.leader }
@@ -273,23 +361,34 @@ function list(el, hd, rows, empty) {
 function renderTenants() {
   if (!loaded.tenants) return
   const pct = t => (t.monthlyLimit ? 100 * t.monthlyUsed / t.monthlyLimit : -1)
+  const all = isSuper() && !scopeOrg
   const rows = [...tenants].sort((a, b) => pct(b) - pct(a) || a.tenant.localeCompare(b.tenant)).map(t => {
-    const p = pct(t), state = p >= 100 ? 'bad' : p >= PLAN_ALERT ? 'warn' : ''
-    const label = p < 10 ? p.toFixed(1) : Math.round(p)
-    const plan = p < 0
-      ? col('sub2', 'No monthly cap')
-      : h('div', {},
-        h('div', { className: 'plan-l' }, h('span', {}, h('b', {}, fmt(t.monthlyUsed)), ' of ' + fmt(t.monthlyLimit)),
-          state ? h('span', { className: 'pill ' + state, title: `Alert line is ${PLAN_ALERT}% of the monthly quota` }, state === 'bad' ? 'quota used up' : `${label}% used`) : h('span', {}, label + '%')),
-        h('div', { className: 'plan ' + state, role: 'progressbar', 'aria-label': t.tenant + ' monthly quota', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(Math.min(100, p)) }, h('i', { style: `width:${Math.min(100, p)}%` })))
+    const p = pct(t)
     return h('div', { className: 'r' },
-      h('div', {}, col('mono', t.tenant), col('sub2', [t.tier, rateText(t.tier)].filter(Boolean).join(' · '))),
-      plan, col('num mono', fmt(t.allowed)), col('num mono', fmt(t.blocked)),
+      h('div', {}, col('mono', t.tenant), col('sub2', [all && t.org && 'org ' + t.org, t.tier, rateText(t.tier)].filter(Boolean).join(' · '))),
+      p < 0 ? col('sub2', 'No monthly cap') : gauge(t.monthlyUsed, t.monthlyLimit, t.tenant + ' monthly quota', 'quota used up'),
+      col('num mono', fmt(t.allowed)), col('num mono', fmt(t.blocked)),
       col('meta2 mono', `${fmt(t.allowed)} allowed · ${fmt(t.blocked)} blocked`))
   })
+  // the org's shared budget heads the list: it caps every row below it together
+  if (orgInfo) rows.unshift(h('div', { className: 'r orgrow' },
+    h('div', {}, col('mono', orgInfo.name || orgInfo.id), col('sub2', 'org budget, shared')),
+    orgInfo.budget ? gauge(orgInfo.used, orgInfo.budget, orgInfo.id + ' shared monthly budget', 'budget used up') : col('sub2', `No budget · ${fmt(orgInfo.used)} used`),
+    col('num mono', fmt(totals.allowed)), col('num mono', fmt(totals.blocked)),
+    col('meta2 mono', `${fmt(totals.allowed)} allowed · ${fmt(totals.blocked)} blocked`)))
   list($('#tenants'), head(['Tenant', 'Monthly quota', 'Allowed', 'Blocked'], [2, 3]), rows, 'No tenants yet.')
   const now = new Date()
   $('#resets').textContent = 'Resets in ' + Math.ceil((Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) - now) / 864e5) + ' d (UTC)'
+}
+
+// gauge: used of limit, with the 80% alert line and warn/bad past it (tenant quotas and org budgets)
+function gauge(used, limit, label, full) {
+  const p = 100 * used / limit, state = p >= 100 ? 'bad' : p >= PLAN_ALERT ? 'warn' : ''
+  const pc = p < 10 ? p.toFixed(1) : Math.round(p)
+  return h('div', {},
+    h('div', { className: 'plan-l' }, h('span', {}, h('b', {}, fmt(used)), ' of ' + fmt(limit)),
+      state ? h('span', { className: 'pill ' + state, title: `Alert line is ${PLAN_ALERT}% of the limit` }, state === 'bad' ? full : `${pc}% used`) : h('span', {}, pc + '%')),
+    h('div', { className: 'plan ' + state, role: 'progressbar', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(Math.min(100, p)) }, h('i', { style: `width:${Math.min(100, p)}%` })))
 }
 
 function renderRoutes() {
@@ -314,6 +413,9 @@ function renderTiers() {
   const n = Object.keys(cfg.keys).length
   $('#tierNote').textContent = `${n} API ${n === 1 ? 'key' : 'keys'}. Requests without a known key are limited per client IP on the ${cfg.anonymous} tier.`
   $('#keys').replaceChildren(...Object.entries(cfg.keys).map(([k, t]) => h('option', { value: k, label: `${t.id} (${t.tier})` })))
+  const sel = $('#tenantForm').tier, cur = sel.value
+  sel.replaceChildren(...Object.keys(cfg.tiers).map(n => h('option', { value: n }, n)))
+  sel.value = cur in cfg.tiers ? cur : cfg.anonymous
 }
 
 function ago(ts) {
@@ -321,23 +423,26 @@ function ago(ts) {
   return isNaN(s) ? '—' : s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago'
 }
 
-const arrowIcon = () => {
+const icon12 = d => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   s.setAttribute('viewBox', '0 0 12 12'); s.setAttribute('width', 12); s.setAttribute('height', 12); s.setAttribute('aria-hidden', 'true')
-  s.innerHTML = '<path d="M3.5 8.5l5-5M4.5 3.5h4v4" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  s.innerHTML = `<path d="${d}" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>`
   return s
 }
+const arrowIcon = () => icon12('M3.5 8.5l5-5M4.5 3.5h4v4')
+const askIcon = () => icon12('M4.2 4.4a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.3M6 9.6v.1')
 
 function renderClients() {
   const cards = clients.map(c => {
     const pct = Math.round((c.blockRatio ?? 0) * 100), rps = (c.rps ?? 0).toFixed(1)
     return h('article', { className: 'ccard' },
       h('div', { className: 'ctop' }, col('cid', c.client),
+        h('button', { className: 'arrow', type: 'button', title: 'Explain ' + c.client, 'aria-label': 'Explain ' + c.client, onclick: () => window.lpAI?.client(c.client) }, askIcon()),
         h('button', { className: 'arrow', type: 'button', title: 'Show decisions from ' + c.client, 'aria-label': 'Show decisions from ' + c.client, onclick: () => viewClient(c.client) }, arrowIcon())),
       h('p', { className: 'sub2' }, `${rps}/s · `, col(pct >= 50 ? 'badtxt' : '', pct + '% blocked'), h('br'), 'seen ' + ago(c.lastSeen),
         ...(c.lane ? [h('br'), h('span', { title: `Its tier has lanes: as a ${c.lane} it gets a burst of ${fmt(c.burst)}. Rate and monthly quota are unchanged.` }, `lane ${c.lane} · burst ${fmt(c.burst)}`)] : [])),
       h('div', { className: 'cfoot' }, col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
-        isBanned(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
+        isBanned(c.client) ? col('pill warn', 'banned') : isSuper() ? h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban') : null))
   })
   $('#clients').replaceChildren(...(cards.length ? cards : [h('div', { className: 'rows' }, h('div', { className: 'state-row' }, 'No clients have sent traffic yet.'))]))
   $('#clCount').textContent = `${clients.length} ${clients.length === 1 ? 'client' : 'clients'}`
@@ -354,9 +459,9 @@ function renderBans() {
     return h('div', { className: 'r' },
     h('div', {}, col('mono ell', b.client), t.cidr ? h('span', { className: 'sub2 ell', title: `${n} active ${n === 1 ? 'client' : 'clients'} in this range` }, rangeText(t) + (n ? ` · ${n} active` : '')) : null),
     h('div', {}, h('span', { className: 'mono', 'data-until': b.until }, left(b.until)), col('sub2 ell', b.reason || 'manual')),
-    h('button', { className: 'btn small', type: 'button', 'aria-label': 'Unban ' + b.client, onclick: () => unban(b.client) }, 'Unban'))
+    isSuper() ? h('button', { className: 'btn small', type: 'button', 'aria-label': 'Unban ' + b.client, onclick: () => unban(b.client) }, 'Unban') : h('span'))
   })
-  list($('#bans'), head(['Client', 'Expires', '']), rows, 'Nobody is banned.')
+  list($('#bans'), head(['Client', 'Expires', '']), rows, isSuper() ? 'Nobody is banned.' : 'None of your clients is banned.')
 }
 
 async function ban(client, minutes, reason) {
@@ -401,9 +506,10 @@ function connect() {
   if (!token) return
   es?.close()
   setLive(false)
-  es = new EventSource('api/events?token=' + encodeURIComponent(token))
+  es = new EventSource(orgQ('api/events?token=' + encodeURIComponent(token)))
   es.onopen = () => { backoff = 1000; setLive(true); refresh(true) }
   es.addEventListener('decision', e => onDecision(JSON.parse(e.data)))
+  window.lpAI?.listen(es)
   es.addEventListener('ban', e => {
     const b = JSON.parse(e.data)
     toast(`Ban added: ${b.client}${b.reason ? ' (' + b.reason + ')' : ''}`, 'warn')
@@ -414,7 +520,7 @@ function connect() {
     setLive(false)
     if (!token) return
     // EventSource hides the status code, so probe once to catch an expired token.
-    api('stats').catch(() => {})
+    api(orgQ('stats')).catch(() => {})
     setTimeout(connect, backoff)
     backoff = Math.min(backoff * 2, 30000)
   }
@@ -440,7 +546,7 @@ function ingest(d) {
 
 async function loadAudit() {
   try {
-    const a = await api('audit?limit=200')
+    const a = await api(orgQ('audit?limit=200'))
     a.reverse().forEach(ingest)
   } catch (err) {
     $('#feedEmpty').dataset.s = 'err'
@@ -555,7 +661,8 @@ function finding() {
   const recent = buf.filter(d => d._ms > cut), blocked = recent.filter(d => !d.allowed)
   const top = key => { const c = {}; blocked.forEach(d => { c[d[key]] = (c[d[key]] || 0) + 1 }); return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] }
   const alert = tenants.filter(t => t.monthlyLimit && 100 * t.monthlyUsed / t.monthlyLimit >= PLAN_ALERT)
-  const plan = alert.length ? ` ${alert.map(t => t.tenant).join(', ')} ${alert.length === 1 ? 'is' : 'are'} past ${PLAN_ALERT}% of the monthly quota.` : ''
+  let plan = alert.length ? ` ${alert.map(t => t.tenant).join(', ')} ${alert.length === 1 ? 'is' : 'are'} past ${PLAN_ALERT}% of the monthly quota.` : ''
+  if (orgInfo?.budget && 100 * orgInfo.used / orgInfo.budget >= PLAN_ALERT) plan += ` ${orgInfo.name || orgInfo.id} is past ${PLAN_ALERT}% of its shared budget.`
   if (!recent.length) return 'No requests in the last minute.' + plan
   if (!blocked.length) return `${fmt(recent.length)} requests in the last minute, none blocked.` + plan
   return `${fmt(blocked.length)} of ${fmt(recent.length)} requests blocked in the last minute, mostly ${top('reason')} from ${top('client')}.` + plan
@@ -571,12 +678,14 @@ const why = d => ({
   ok: 'Within limits. The request was passed through.',
   burst: `The client used up its ${d.tier} burst allowance. Wait ${dur(d.retryAfter)} for tokens to refill.`,
   monthly: `${d.tenant} has used its monthly quota on the ${d.tier} tier. It resets on the 1st (UTC).`,
+  org_monthly: `The ${d.org} org has used its shared monthly budget, across all its tenants. It resets on the 1st (UTC).`,
   banned: `${d.client} is on the ban list${d.retryAfter ? ', which lifts in ' + dur(d.retryAfter) : ''}.`,
   error: 'The shared backend failed and the gateway is set to fail closed.',
 }[d.reason] || '')
 
 function openDrawer(d, from) {
   drawerD = d; sel = d._seq; trigger = from
+  window.lpAI?.decision(d)
   const pill = $('#dPill')
   pill.className = 'pill ' + (d.allowed ? 'ok' : reasonCls(d.reason))
   pill.textContent = d.allowed ? 'allowed' : d.reason
@@ -585,10 +694,10 @@ function openDrawer(d, from) {
   const row = (k, v, sub) => h('div', {}, h('dt', {}, k), h('dd', {}, v, sub ? h('small', {}, sub) : null))
   const ms = String(d._ms % 1000).padStart(3, '0')
   $('#dList').replaceChildren(
-    row('Time', `${clock(d._ms)}.${ms}`), row('Tenant', d.tenant || '—'), row('Tier', d.tier || '—'), row('Client', d.client),
+    row('Time', `${clock(d._ms)}.${ms}`), row('Tenant', d.tenant || '—'), row('Org', d.org || '—', d.org ? 'shares one monthly budget' : null), row('Tier', d.tier || '—'), row('Client', d.client),
     row('Cost', fmt(d.cost), d.cost === 1 ? 'token' : 'tokens'),
     row('Lane', d.lane || '—', d.lane ? 'set this burst' : 'tier has no lanes'),
-    row(d.reason === 'monthly' ? 'Monthly limit' : 'Limit', d.limit ? fmt(d.limit) : '—'),
+    row(d.reason === 'monthly' ? 'Monthly limit' : d.reason === 'org_monthly' ? 'Org budget' : 'Limit', d.limit ? fmt(d.limit) : '—'),
     row('Remaining', d.limit ? fmt(d.remaining) : '—', d.limit ? `${Math.round(100 * d.remaining / d.limit)}% of limit` : null),
     row('Retry after', dur(d.retryAfter)),
     row('Degraded', d.degraded ? 'yes' : 'no', d.degraded ? 'local fallback decided this' : null))
@@ -815,20 +924,23 @@ let palItems = [], palAt = 0, palFrom = null
 
 function commands(raw) {
   const q = raw.toLowerCase(), go = (v, label, key) => ({ group: 'Go to', label, key, run: () => { location.hash = '#/' + v } })
+  const vs = shownViews(), labels = { overview: 'Overview', clients: 'Clients and bans', org: isSuper() ? 'Orgs, tenants and keys' : 'Org, tenants and members', ask: 'Ask and explain', policy: 'Open policy editor', try: 'Try it' }
+  const user = me && me.user !== 'admin'
   const all = [
-    go('overview', 'Overview', '1'), go('clients', 'Clients and bans', '2'), go('policy', 'Open policy editor', '3'),
-    ...(proxied ? [] : [go('try', 'Try it', '4')]),
+    ...vs.map((v, i) => go(v, labels[v], String(i + 1))),
     { group: 'Feed', label: paused ? 'Resume the decision feed' : 'Pause the decision feed', key: 'p', run: () => setPaused(!paused) },
     { group: 'Feed', label: 'Filter decisions', key: '/', run: () => { location.hash = '#/overview'; route(); $('#q').focus() } },
-    { group: 'Clients', label: 'Ban an IP or CIDR…', hint: 'type it', keep: true, run: () => { palQ.value = 'ban '; palRender() } },
+    ...(isSuper() ? [{ group: 'Clients', label: 'Ban an IP or CIDR…', hint: 'type it', keep: true, run: () => { palQ.value = 'ban '; palRender() } }] : []),
+    ...(isSuper() ? orgs.map(o => ({ group: 'Org in view', label: 'View ' + (o.name || o.id), hint: o.id, run: () => switchOrg(o.id) })).concat(scopeOrg ? [{ group: 'Org in view', label: 'View all orgs', run: () => switchOrg('') }] : []) : []),
     { group: 'General', label: `Switch to ${isDark() ? 'light' : 'dark'} theme`, run: toggleTheme },
     { group: 'General', label: 'Keyboard shortcuts', key: '?', run: () => $('#help').showModal() },
+    ...(user ? [{ group: 'Account', label: 'Change password', run: () => openPw() }, { group: 'Account', label: 'Sign out everywhere', hint: 'every session', run: revokeAll }] : []),
     { group: 'General', label: 'Sign out', run: logout },
   ]
   const target = raw.replace(/^ban\s+/i, '').trim()
   const banOnly = /^ban\s+\S/i.test(raw)
   const found = banOnly ? [] : all.filter(c => !q || c.label.toLowerCase().includes(q))
-  if (!target || /\s/.test(target) || (!banOnly && found.length && target.length < 3)) return found
+  if (!isSuper() || !target || /\s/.test(target) || (!banOnly && found.length && target.length < 3)) return found
   const t = target.toLowerCase(), banItem = (id, hint) => ({ group: 'Ban for 10 minutes', label: 'Ban ' + id, hint, run: () => ban(id, 10, 'manual (palette)') })
   const known = clients.filter(c => !isBanned(c.client) && c.client.toLowerCase().includes(t)).slice(0, 5)
   const bans = known.map(c => banItem(c.client, c.label || 'client'))
@@ -910,11 +1022,252 @@ addEventListener('keydown', e => {
     if (e.key === 'Escape' && e.target.id === 'q') { clearFilter(); e.target.blur() }
     return
   }
-  const tabs = views.filter(v => !(v === 'try' && proxied))
+  const tabs = shownViews()
   if (e.key === '/') { e.preventDefault(); location.hash = '#/overview'; route(); $('#q').focus() }
   else if (e.key === 'p') setPaused(!paused)
   else if (e.key === '?') $('#help').showModal()
   else if (/^[1-9]$/.test(e.key) && tabs[e.key - 1]) location.hash = '#/' + tabs[e.key - 1]
 })
 
+// org view: the shared budget, tenants and keys, members; for the superadmin across all orgs, the orgs
+let orgs = [], orgInfo = null, otenants = [], members = null
+
+async function loadOrgs() {
+  if (!isSuper()) return
+  try { orgs = await api('orgs') } catch { return }
+  const pick = $('#orgPick')
+  pick.replaceChildren(h('option', { value: '' }, 'All orgs'), ...orgs.map(o => h('option', { value: o.id }, o.name || o.id)))
+  if (scopeOrg && !orgs.some(o => o.id === scopeOrg)) return switchOrg('')
+  pick.value = scopeOrg
+  renderOrgs()
+}
+
+function loadOrgView() {
+  const one = !!viewOrg(), sup = isSuper()
+  const name = one ? (sup ? orgs.find(o => o.id === scopeOrg)?.name : me.orgName) || viewOrg() : 'every org'
+  $('#h-org').replaceChildren(one ? 'Org, ' : 'Orgs, ', h('em', {}, one ? name : 'all of them'))
+  $('#orgSub').textContent = one ? `Tenants, API keys${can('owner') ? ', members' : ''} and the shared monthly budget of ${name}.` : 'Every org on this gateway. Pick one to manage its members, tenants and budget.'
+  $('#orgsCard').hidden = !sup || one
+  $('#budgetCard').hidden = !one
+  $('#tenantsCard').className = 'card' + (one ? ' c7' : '')
+  $('#membersCard').hidden = !one || !can('owner')
+  $('#budgetForm').hidden = !can('owner')
+  $('#tenantForm').hidden = !one || !can('admin')
+  $('#otNote').textContent = one ? 'Keys made here are stored as a hash: the key itself is shown once.' : 'Every tenant. Switch to an org to add tenants and keys in it; tenants from the policy file are managed there.'
+  if (sup) loadOrgs()
+  renderBudget(); renderOrgTenants(true)
+  if (one && can('owner')) loadMembers()
+}
+
+function renderOrgs() {
+  const rows = orgs.map(o => h('div', { className: 'r' },
+    h('div', {}, h('button', { className: 'link mono', type: 'button', title: 'View ' + o.id, onclick: () => switchOrg(o.id) }, o.name || o.id), col('sub2', o.id)),
+    o.budget ? gauge(o.used, o.budget, o.id + ' shared budget', 'budget used up') : col('sub2', `No budget · ${fmt(o.used)} used`),
+    col('num mono', fmt(o.members)), col('num mono', fmt(o.tenants)),
+    h('button', { className: 'btn small', type: 'button', 'aria-label': 'Delete org ' + o.id, onclick: () => deleteOrg(o) }, 'Delete')))
+  list($('#orgs'), head(['Org', 'Budget this month', 'Members', 'Tenants', ''], [2, 3]), rows, 'No orgs yet. Create the first one below.')
+  $('#orgsCount').textContent = `${orgs.length} ${orgs.length === 1 ? 'org' : 'orgs'}`
+}
+
+async function deleteOrg(o) {
+  if (!confirm(`Delete ${o.name || o.id} and its ${o.members} members? Its tenants must be gone first.`)) return
+  try { await api('orgs/' + enc(o.id), { method: 'DELETE' }); toast('Deleted org ' + o.id, 'ok'); loadOrgs() }
+  catch (err) { toast(err.message, 'bad') }
+}
+
+$('#orgForm').onsubmit = async e => {
+  e.preventDefault()
+  const f = e.target, body = { name: f.name.value.trim(), id: f.id.value.trim() || undefined, budget: f.budget.value ? Number(f.budget.value) : undefined }
+  $('#orgMsg').textContent = ''
+  if (!body.name) { $('#orgMsg').textContent = 'An org needs a name.'; return f.name.focus() }
+  try {
+    const o = await api('orgs', { method: 'POST', body: JSON.stringify(body) })
+    toast('Created org ' + o.id + '. Add its first owner from its page.', 'ok')
+    f.reset()
+    await loadOrgs()
+  } catch (err) { $('#orgMsg').textContent = err.message }
+}
+
+function renderBudget() {
+  if (!$('#budgetCard') || !viewOrg()) return
+  const o = orgInfo, box = $('#budget')
+  const now = new Date()
+  $('#budgetResets').textContent = 'Resets in ' + Math.ceil((Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) - now) / 864e5) + ' d (UTC)'
+  if (!o) return box.replaceChildren(h('div', { className: 'skel', 'aria-hidden': 'true' }, h('i'), h('i')))
+  box.replaceChildren(
+    h('div', { className: 'kpi bnum' }, h('span', {}, 'Used this month'), h('b', {}, fmt(o.used), h('small', {}, ' units'))),
+    o.budget ? gauge(o.used, o.budget, o.id + ' shared monthly budget', 'budget used up') : h('p', { className: 'meta' }, 'No budget: spend is counted, nothing is capped. Set one and it covers this whole month, spend so far included.'))
+  const inp = $('#budgetForm').budget
+  if (document.activeElement !== inp) inp.placeholder = o.budget ? String(o.budget) : '0 for none'
+  $('#budgetClear').hidden = !o.budget
+}
+
+async function setBudget(budget) {
+  $('#budgetMsg').textContent = ''
+  if (!(Number.isInteger(budget) && budget >= 0)) { $('#budgetMsg').textContent = 'A budget is a whole number of units, 0 for none.'; return }
+  try {
+    orgInfo = await api('orgs/' + enc(viewOrg()), { method: 'PATCH', body: JSON.stringify({ budget }) })
+    toast(budget ? `Budget set to ${fmt(budget)} units a month` : 'Budget removed', 'ok')
+    $('#budgetForm').reset()
+    renderBudget(); renderTenants()
+  } catch (err) { $('#budgetMsg').textContent = err.message }
+}
+$('#budgetForm').onsubmit = e => { e.preventDefault(); const v = e.target.budget.value; setBudget(v === '' ? NaN : Number(v)) }
+$('#budgetClear').onclick = () => setBudget(0)
+
+function renderOrgTenants(force) {
+  const box = $('#otenants')
+  if (!loaded.otenants) return
+  const sig = JSON.stringify([otenants, me?.role, scopeOrg])
+  if (!force && box.dataset.sig === sig) return // re-render only on change, so focus and clicks survive the refresh
+  box.dataset.sig = sig
+  const all = isSuper() && !scopeOrg, edit = can('admin')
+  const rows = otenants.map(t => {
+    const keys = (t.keys || []).map(k => h('span', { className: 'kchip mono', title: 'Created ' + new Date(k.created).toLocaleString() }, k.prefix + '…',
+      edit ? h('button', { className: 'x', type: 'button', 'aria-label': `Revoke key ${k.prefix} of ${t.id}`, title: 'Revoke this key', onclick: () => revokeKey(t, k) }, '×') : null))
+    return h('div', { className: 'r' },
+      h('div', {}, col('mono ell', t.id), col('sub2', [all && (t.org ? 'org ' + t.org : 'no org'), t.tier, t.managed ? 'dashboard' : t.pinned ? 'policy, org pinned' : 'policy'].filter(Boolean).join(' · '))),
+      h('div', { className: 'kchips' }, ...(keys.length ? keys : [col('sub2', t.managed ? 'No keys yet' : 'Keys in the policy')])),
+      h('div', { className: 'acts' }, ...(edit && t.managed ? [
+        h('button', { className: 'btn small', type: 'button', onclick: () => newKey(t) }, 'New key'),
+        h('button', { className: 'btn small ghost', type: 'button', 'aria-label': 'Delete tenant ' + t.id, onclick: () => deleteTenant(t) }, 'Delete')] : [])))
+  })
+  list(box, head(['Tenant', 'Keys', '']), rows, viewOrg() ? 'No tenants in this org yet.' : 'No tenants yet.')
+  $('#otCount').textContent = `${otenants.length} ${otenants.length === 1 ? 'tenant' : 'tenants'}`
+}
+
+async function reloadTenants() {
+  try { otenants = await api(orgQ('tenants')); loaded.otenants = true; renderOrgTenants(true) } catch (err) { toast(err.message, 'bad') }
+}
+
+$('#tenantForm').onsubmit = async e => {
+  e.preventDefault()
+  const f = e.target, id = f.id.value.trim()
+  $('#tenantMsg').textContent = ''
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) { $('#tenantMsg').textContent = 'A tenant id is 1 to 64 letters, digits, dots, dashes and underscores.'; return f.id.focus() }
+  try {
+    await api('tenants', { method: 'POST', body: JSON.stringify({ id, tier: f.tier.value, org: viewOrg() }) })
+    toast(`Added tenant ${id}. Make it a key next.`, 'ok')
+    f.id.value = ''
+    reloadTenants()
+  } catch (err) { $('#tenantMsg').textContent = err.message }
+}
+
+async function deleteTenant(t) {
+  if (!confirm(`Delete tenant ${t.id} and its ${(t.keys || []).length} keys? Requests with them become anonymous at once.`)) return
+  try { await api('tenants/' + enc(t.id), { method: 'DELETE' }); toast('Deleted tenant ' + t.id, 'ok'); reloadTenants() }
+  catch (err) { toast(err.message, 'bad') }
+}
+
+async function newKey(t) {
+  try {
+    const k = await api('tenants/' + enc(t.id) + '/keys', { method: 'POST' })
+    showSecret('New API key', `For ${t.id}. Send it as the X-Api-Key header; every replica accepts it now.`, k.key, 'Copy it now: it is stored only as a hash, so you won\'t see it again.')
+    reloadTenants()
+  } catch (err) { toast('New key failed: ' + err.message, 'bad') }
+}
+
+async function revokeKey(t, k) {
+  if (!confirm(`Revoke key ${k.prefix}… of ${t.id}? Requests with it become anonymous at once.`)) return
+  try { await api(`tenants/${enc(t.id)}/keys/${enc(k.id)}`, { method: 'DELETE' }); toast(`Revoked ${k.prefix}…`, 'ok'); reloadTenants() }
+  catch (err) { toast(err.message, 'bad') }
+}
+
+// one dialog for anything shown once: a new key, a generated password
+let secretFrom
+function showSecret(title, why, value, note) {
+  secretFrom = document.activeElement
+  $('#secretTitle').textContent = title
+  $('#secretWhy').textContent = why
+  $('#secretVal').textContent = value
+  $('#secret').querySelector('.meta').textContent = note
+  $('#secret').showModal()
+  $('#secretCopy').focus()
+}
+$('#secret').onclose = () => { $('#secretVal').textContent = ''; if (secretFrom?.isConnected) secretFrom.focus() }
+$('#secretCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#secretVal').textContent); toast('Copied', 'ok') }
+  catch { toast('Copy is blocked here: select the text instead', 'bad') }
+}
+
+async function loadMembers() {
+  try { members = await api(`orgs/${enc(viewOrg())}/members`) } catch (err) { members = null; return failed('members', 'members', err) }
+  renderMembers()
+}
+
+function renderMembers() {
+  if (!members) return
+  const roles = ['viewer', 'admin', 'owner']
+  const rows = members.map(m => h('div', { className: 'r' },
+    h('div', {}, col('mono ell', m.email), col('sub2', (m.id === me.user ? 'you · ' : '') + 'since ' + new Date(m.created).toLocaleDateString())),
+    h('label', { className: 'sr', htmlFor: 'role-' + m.id }, 'Role of ' + m.email),
+    h('select', { id: 'role-' + m.id, className: 'pick', onchange: e => setRole(m, e.target) }, ...roles.map(r => h('option', { value: r, selected: r === m.role }, r))),
+    h('div', { className: 'acts' },
+      h('button', { className: 'btn small', type: 'button', title: 'End every session ' + m.email + ' has', onclick: () => revokeMember(m) }, 'Sign out'),
+      h('button', { className: 'btn small ghost', type: 'button', 'aria-label': 'Remove ' + m.email, onclick: () => removeMember(m) }, 'Remove'))))
+  list($('#members'), head(['Member', 'Role', '']), rows, 'No members yet: add the first owner below.')
+  $('#memCount').textContent = `${members.length} ${members.length === 1 ? 'member' : 'members'}`
+}
+
+const memberPath = m => `orgs/${enc(viewOrg())}/members/${enc(m.id)}`
+async function setRole(m, sel) {
+  try {
+    await api(memberPath(m), { method: 'PATCH', body: JSON.stringify({ role: sel.value }) })
+    toast(`${m.email} is now ${sel.value}; their sessions ended`, 'ok')
+    if (m.id === me.user) return logout() // our own token carried the old role
+    loadMembers()
+  } catch (err) { sel.value = m.role; toast(err.message, 'bad') }
+}
+async function revokeMember(m) {
+  try {
+    await api(memberPath(m) + '/revoke', { method: 'POST' })
+    if (m.id === me.user) return logout()
+    toast(`Signed ${m.email} out everywhere`, 'ok')
+  } catch (err) { toast(err.message, 'bad') }
+}
+async function removeMember(m) {
+  if (!confirm(`Remove ${m.email} from the org? Their sessions end at once.`)) return
+  try {
+    await api(memberPath(m), { method: 'DELETE' })
+    if (m.id === me.user) return logout()
+    toast('Removed ' + m.email, 'ok'); loadMembers()
+  } catch (err) { toast(err.message, 'bad') }
+}
+
+$('#memberForm').onsubmit = async e => {
+  e.preventDefault()
+  const f = e.target, body = { email: f.email.value.trim(), role: f.role.value, password: f.password.value }
+  $('#memberMsg').textContent = ''
+  if (!body.email.includes('@')) { $('#memberMsg').textContent = 'Enter an email address.'; return f.email.focus() }
+  if (body.password && body.password.length < 10) { $('#memberMsg').textContent = 'A password needs at least 10 characters, or leave it empty to generate one.'; return f.password.focus() }
+  try {
+    const u = await api(`orgs/${enc(viewOrg())}/members`, { method: 'POST', body: JSON.stringify(body) })
+    f.reset()
+    if (u.password) showSecret('Account created', `${u.email} can sign in as ${u.role} with this password, and change it from the command palette.`, u.password, 'Pass it on now: it is stored only as a hash, so you won\'t see it again.')
+    else toast(`Added ${u.email} as ${u.role}`, 'ok')
+    loadMembers()
+  } catch (err) { $('#memberMsg').textContent = err.message }
+}
+
+// account
+function openPw() { $('#pwForm').reset(); $('#pwMsg').textContent = ''; $('#pwDlg').showModal(); $('#pwForm').current.focus() }
+$('#pwCancel').onclick = () => $('#pwDlg').close()
+$('#pwForm').onsubmit = async e => {
+  e.preventDefault()
+  const f = e.target
+  if (f.password.value.length < 10) { $('#pwMsg').textContent = 'The new password needs at least 10 characters.'; return f.password.focus() }
+  try {
+    signedIn(await api('me/password', { method: 'PUT', body: JSON.stringify({ current: f.current.value, password: f.password.value }) }))
+    $('#pwDlg').close()
+    connect()
+    toast('Password changed. Your other sessions ended.', 'ok')
+  } catch (err) { $('#pwMsg').textContent = err.message }
+}
+async function revokeAll() {
+  if (!confirm('Sign out of every session, this one included?')) return
+  try { await api('me/revoke', { method: 'POST' }) } catch {}
+  logout()
+}
+
+api('login').then(o => { signupOn = !!o.signup; if (!token) setMode(loginMode) }).catch(() => {})
 token ? start() : show(false)

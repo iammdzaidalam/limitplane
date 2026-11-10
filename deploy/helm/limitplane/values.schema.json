@@ -58,6 +58,10 @@
     "adminKey": {"type": "string"},
     "metricsKey": {"type": "string"},
     "redisUrl": {"type": "string", "pattern": "^(rediss?://.+)?$"},
+    "orgs": {
+      "type": "object",
+      "properties": {"signup": {"type": "boolean"}}
+    },
     "operator": {
       "type": "object",
       "properties": {

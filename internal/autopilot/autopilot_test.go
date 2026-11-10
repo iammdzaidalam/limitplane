@@ -128,12 +128,8 @@ func TestQuotaAlertOncePerMonth(t *testing.T) {
 }
 
 func labelOf(p *Pilot, client string) string {
-	for _, c := range p.Clients() {
-		if c.Client == client {
-			return c.Label
-		}
-	}
-	return ""
+	c, _ := p.Client(client)
+	return c.Label
 }
 
 func TestLabels(t *testing.T) {

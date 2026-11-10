@@ -88,7 +88,7 @@ func readCommand(r *bufio.Reader) ([]string, error) {
 func bulk(s string) string { return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s) }
 
 func TestRedisCheckWire(t *testing.T) {
-	c, log := fakeRedis(t, "*5\r\n:2\r\n:2\r\n:250000\r\n:1500000\r\n:7\r\n")
+	c, log := fakeRedis(t, "*6\r\n:2\r\n:2\r\n:250000\r\n:1500000\r\n:7\r\n:0\r\n")
 	l := NewRedis(c, nil)
 	res, err := l.Check(ctx, Request{Client: "192.0.2.1", Key: "acme", Rate: Rate{Limit: 10, Period: time.Second, Burst: 5}, Cost: 3, Month: 100})
 	if err != nil {
@@ -110,13 +110,22 @@ func TestRedisCheckWire(t *testing.T) {
 	if redisx.Slot(a[3]) != redisx.Slot(a[4]) {
 		t.Fatal("tenant keys must share a Cluster slot")
 	}
+	// In an org, the tenant's keys move under the org's tag, next to the org's budget key.
+	mustCheck(t, l, Request{Key: "acme", Org: "corp", Rate: Rate{Limit: 10, Period: time.Second, Burst: 5}, Cost: 3, OrgMonth: 50})
+	a = log()[1]
+	if a[2] != "3" || a[3] != "lp:{org:corp}:t:acme:r" || a[4] != "lp:{org:corp}:t:acme:q:" || a[5] != "lp:{org:corp}:budget:" || a[10] != "50" {
+		t.Fatalf("org args %q", a)
+	}
+	if redisx.Slot(a[3]) != redisx.Slot(a[5]) || redisx.Slot(a[4]) != redisx.Slot(a[5]) {
+		t.Fatal("org keys must share a Cluster slot")
+	}
 	// A banned client (here a CIDR) is answered in process: no Redis command at all.
 	l.bans.set(Ban{Client: "192.0.2.0/24", Until: time.Now().Add(time.Minute)})
 	if res := mustCheck(t, l, Request{Client: "192.0.2.1", Key: "acme", Rate: Rate{Limit: 1, Period: time.Second}, Cost: 1}); res.Reason != Banned {
 		t.Fatalf("%+v", res)
 	}
-	if n := len(log()); n != 1 {
-		t.Fatalf("banned check sent %d commands", n-1)
+	if n := len(log()); n != 2 {
+		t.Fatalf("banned check sent %d commands", n-2)
 	}
 	c2, _ := fakeRedis(t, ":1\r\n")
 	if _, err := NewRedis(c2, nil).Allow(ctx, "k", Rate{Limit: 1, Period: time.Second}, 1); err == nil {
@@ -314,7 +323,7 @@ func TestRedisIntegration(t *testing.T) {
 		if res.Allowed || res.Reason != Burst || res.RetryAfter < 59*time.Second || res.RetryAfter > time.Minute {
 			t.Fatalf("4th: %+v", res)
 		}
-		if ttl, _ := c.Do(ctx, "PTTL", tag(key)+"r"); ttl.(int64) <= 0 {
+		if ttl, _ := c.Do(ctx, "PTTL", tag(key, "")+"r"); ttl.(int64) <= 0 {
 			t.Fatalf("key must expire, pttl %v", ttl)
 		}
 	})
@@ -362,7 +371,7 @@ func TestRedisIntegrationSpendsOnlyWhenAllPass(t *testing.T) {
 			t.Fatalf("burst reject billed the month: %d %v", n, err)
 		}
 		month := time.Now().UTC().Format("2006-01") // only the test reads the app clock
-		if ttl, _ := c.Do(ctx, "PTTL", tag(q.Key)+"q:"+month); ttl.(int64) < 34*24*3600*1000 {
+		if ttl, _ := c.Do(ctx, "PTTL", tag(q.Key, "")+"q:"+month); ttl.(int64) < 34*24*3600*1000 {
 			t.Fatalf("quota key ttl %v", ttl)
 		}
 	})

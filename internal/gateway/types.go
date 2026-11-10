@@ -8,6 +8,7 @@ const (
 	ReasonOK      = "ok"
 	ReasonBurst   = "burst"
 	ReasonMonthly = "monthly"
+	ReasonOrg     = "org_monthly" // the tenant's org used up its shared monthly budget
 	ReasonBanned  = "banned"
 	ReasonError   = "error" // backend failed and fail-closed is on
 )
@@ -15,6 +16,7 @@ const (
 type Decision struct {
 	Time       time.Time     `json:"time"`
 	Tenant     string        `json:"tenant"`
+	Org        string        `json:"org,omitempty"`
 	Tier       string        `json:"tier"`
 	Client     string        `json:"client"`
 	Method     string        `json:"method"`

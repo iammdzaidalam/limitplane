@@ -15,17 +15,23 @@ var b64 = base64.RawURLEncoding
 // Fixed header: we only ever issue HS256, so verify compares against these exact bytes.
 var jwtHeader = b64.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 
+// claims: who (a user id, or "admin" for the admin key), their org and role, and the session
+// version the user had at sign-in. The auth middleware checks all three against the directory.
 type claims struct {
-	Sub string `json:"sub"`
-	Iat int64  `json:"iat"`
-	Exp int64  `json:"exp"`
+	Sub  string `json:"sub"`
+	Org  string `json:"org,omitempty"`
+	Role string `json:"role,omitempty"`
+	Ver  int64  `json:"ver,omitempty"`
+	Iat  int64  `json:"iat"`
+	Exp  int64  `json:"exp"`
 }
 
 var errToken = errors.New("invalid token")
 
-func signJWT(secret []byte, sub string, now time.Time, ttl time.Duration) string {
-	c, _ := json.Marshal(claims{Sub: sub, Iat: now.Unix(), Exp: now.Add(ttl).Unix()})
-	msg := jwtHeader + "." + b64.EncodeToString(c)
+func signJWT(secret []byte, c claims, now time.Time, ttl time.Duration) string {
+	c.Iat, c.Exp = now.Unix(), now.Add(ttl).Unix()
+	b, _ := json.Marshal(c)
+	msg := jwtHeader + "." + b64.EncodeToString(b)
 	return msg + "." + b64.EncodeToString(mac(secret, msg))
 }
 

@@ -23,6 +23,9 @@ spec:
         - name: Tier
           type: string
           jsonPath: .spec.tier
+        - name: Org
+          type: string
+          jsonPath: .spec.org
         - name: Ready
           type: string
           jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -46,6 +49,7 @@ spec:
               properties:
                 id: {type: string, minLength: 1, description: 'Tenant id used in metrics, quotas and the dashboard.'}
                 tier: {type: string, minLength: 1, description: 'A tier of the applied RateLimitPolicy.'}
+                org: {type: string, pattern: '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$', description: 'Org id from the org directory. Puts the tenant under the org''s shared monthly budget and in its members'' dashboard.'}
                 keySecretRef:
                   type: object
                   required: [name, key]

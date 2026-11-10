@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -103,6 +104,7 @@ func (c Config) Validate() error {
 	} else if _, ok := c.Tiers[c.Anonymous]; !ok {
 		bad("anonymous tier %q not defined", c.Anonymous)
 	}
+	orgOf := map[string]string{}
 	for _, k := range slices.Sorted(maps.Keys(c.Keys)) {
 		t := c.Keys[k]
 		if k == "" || t.ID == "" {
@@ -111,9 +113,24 @@ func (c Config) Validate() error {
 		if _, ok := c.Tiers[t.Tier]; !ok {
 			bad("tenant %q: unknown tier %q", t.ID, t.Tier)
 		}
+		if o, seen := orgOf[t.ID]; seen && o != t.Org {
+			bad("tenant %q: keys name different orgs (%q, %q)", t.ID, o, t.Org)
+		}
+		orgOf[t.ID] = t.Org
+		if t.Org != "" && !ValidOrg(t.Org) {
+			bad("tenant %q: org %q must be lowercase letters, digits and dashes (1-40)", t.ID, t.Org)
+		}
+		if t.Org != "" && strings.ContainsAny(t.ID, "{}") {
+			bad("tenant %q: an id in an org can't contain { or }", t.ID) // they would break its Redis hash tag
+		}
 	}
 	return errors.Join(errs...)
 }
+
+var orgID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+
+// ValidOrg reports whether id can name an org: it goes into Redis keys and URLs as it is.
+func ValidOrg(id string) bool { return orgID.MatchString(id) }
 
 // maxSpan bounds how far ahead a burst may book; int64 nanoseconds end at about 292 years.
 const maxSpan = 100 * 365 * 24 * time.Hour

@@ -154,3 +154,29 @@ func TestTransition(t *testing.T) {
 		t.Fatalf("oneLine %q", s)
 	}
 }
+
+// spec.org places a Tenant in an org; a bad org id, or two Tenants of one id in different orgs,
+// make only that Tenant not ready.
+func TestBuildTenantOrg(t *testing.T) {
+	inOrg := func(id, org, key string) Tenant {
+		x := tenant(id, "pro", "keys", key)
+		x.Spec.Org = org
+		return x
+	}
+	tenants := map[string]Tenant{
+		"a": inOrg("acme", "corp", "a"), "b": inOrg("acme", "corp", "b"), "c": inOrg("acme", "other", "c"),
+		"d": inOrg("bad", "Not An Org", "d"), "e": inOrg("br{ce}", "corp", "e"),
+	}
+	cfg, _, conds, err := build(policyCR(t, goodSpec), tenants, map[string]Secret{"keys": secret("a", "ka", "b", "kb", "c", "kc", "d", "kd", "e", "ke")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, w := range map[string]string{"a": "True/Active", "b": "True/Active", "c": "False/OrgConflict", "d": "False/InvalidSpec", "e": "False/InvalidSpec"} {
+		if got := conds[name].Status + "/" + conds[name].Reason; got != w {
+			t.Errorf("%s: %s (%s), want %s", name, got, conds[name].Message, w)
+		}
+	}
+	if cfg.Keys["ka"].Org != "corp" || cfg.Keys["kb"].Org != "corp" || len(cfg.Keys) != 2 || !strings.Contains(conds["a"].Message, "org corp") {
+		t.Fatalf("keys %+v, %q", cfg.Keys, conds["a"].Message)
+	}
+}

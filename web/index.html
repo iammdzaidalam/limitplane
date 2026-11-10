@@ -21,6 +21,8 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
   <nav id="tabs" class="tabs" aria-label="Views" hidden>
     <a href="#/overview" data-tab="overview">Overview</a>
     <a href="#/clients" data-tab="clients">Clients</a>
+    <a href="#/org" data-tab="org">Org</a>
+    <a href="#/ask" data-tab="ask">Ask</a>
     <a href="#/policy" data-tab="policy">Policy</a>
     <a href="#/try" data-tab="try">Try it</a>
   </nav>
@@ -32,6 +34,7 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <button id="cmdk" class="ibtn" type="button" aria-label="Command palette" aria-haspopup="dialog" title="Command palette" hidden>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M6 6V4.5A1.5 1.5 0 1 0 4.5 6H6zm0 0h4M6 6v4m4-4V4.5A1.5 1.5 0 1 1 11.5 6H10zm0 0v4m0 0h1.5a1.5 1.5 0 1 1-1.5 1.5V10zm0 0H6m0 0v1.5A1.5 1.5 0 1 1 4.5 10H6z"/></svg>
     </button>
+    <span id="whoami" class="pill who" hidden></span>
     <button id="logout" class="btn ghost small" type="button" hidden>Sign out</button>
   </div>
 </div></header>
@@ -44,6 +47,8 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
       <span id="kube" class="pill" hidden></span>
       <span id="live" class="pill"><span class="dot"></span><span>offline</span></span>
       <a id="bansPill" class="pill" href="#/clients">0 bans active</a>
+      <label for="orgPick" class="sr">Org in view</label>
+      <select id="orgPick" class="pick" title="Org in view: every number, list and live event is scoped to it" hidden><option value="">All orgs</option></select>
       <span class="spacer"></span>
       <span id="stamp" class="stamp" aria-live="off">Loading</span>
       <button id="refresh" class="btn small" type="button">Refresh</button>
@@ -149,6 +154,70 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
       </div>
     </section>
 
+    <section data-view="org" aria-labelledby="h-org" hidden>
+      <div class="title">
+        <h1 id="h-org" tabindex="-1">Org, <em>members and budget</em></h1>
+        <p id="orgSub" class="sub">Tenants, API keys, people and the shared monthly budget.</p>
+      </div>
+      <div class="grid top">
+        <section id="orgsCard" class="card" aria-labelledby="h-orgs" hidden>
+          <div class="ch"><h2 id="h-orgs">Organisations</h2><span class="spacer"></span><span id="orgsCount" class="micro"></span></div>
+          <div class="rows orgs" id="orgs"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <form id="orgForm" class="row" novalidate>
+            <label class="grow">Name<input name="name" required placeholder="Acme Corp" autocomplete="off"></label>
+            <label>Id<input name="id" placeholder="from the name" autocomplete="off" spellcheck="false"></label>
+            <label>Budget / month<input name="budget" type="number" min="0" placeholder="none" inputmode="numeric"></label>
+            <button class="btn primary" type="submit">Create org</button>
+          </form>
+          <p id="orgMsg" class="msg bad" role="alert"></p>
+        </section>
+        <section id="budgetCard" class="card c5" aria-labelledby="h-budget" hidden>
+          <div class="ch"><h2 id="h-budget">Shared budget</h2><span class="spacer"></span><span id="budgetResets" class="micro"></span></div>
+          <p class="meta">One monthly cap across every tenant in the org, checked in the same step as each tenant's own quota. Past it, requests get <code>org_monthly</code>.</p>
+          <div id="budget" class="budget"></div>
+          <form id="budgetForm" class="row" novalidate hidden>
+            <label class="grow">Units per month<input name="budget" type="number" min="0" placeholder="0 for none" inputmode="numeric" aria-describedby="budgetMsg"></label>
+            <button class="btn" type="submit">Set budget</button>
+            <button id="budgetClear" class="btn ghost" type="button">Remove</button>
+          </form>
+          <p id="budgetMsg" class="msg bad" role="alert"></p>
+        </section>
+        <section id="tenantsCard" class="card c7" aria-labelledby="h-otenants">
+          <div class="ch"><h2 id="h-otenants">Tenants and keys</h2><span class="spacer"></span><span id="otCount" class="micro"></span></div>
+          <p id="otNote" class="meta">Keys made here are stored as a hash: the key itself is shown once.</p>
+          <div class="rows otenants" id="otenants"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <form id="tenantForm" class="row" novalidate hidden>
+            <label class="grow">Tenant id<input name="id" required placeholder="e.g. acme-web" autocomplete="off" spellcheck="false" aria-describedby="tenantMsg"></label>
+            <label>Tier<select name="tier"></select></label>
+            <button class="btn primary" type="submit">Add tenant</button>
+          </form>
+          <p id="tenantMsg" class="msg bad" role="alert"></p>
+        </section>
+      </div>
+      <div class="grid top">
+        <section id="membersCard" class="card" aria-labelledby="h-members" hidden>
+          <div class="ch"><h2 id="h-members">Members</h2><span class="spacer"></span><span id="memCount" class="micro"></span></div>
+          <p class="meta">Owners manage members and the budget, admins manage tenants and keys, viewers read. Changing a role signs that person out.</p>
+          <div class="rows members" id="members"><div class="skel" aria-hidden="true"><i></i><i></i></div></div>
+          <form id="memberForm" class="row" novalidate>
+            <label class="grow">Email<input name="email" type="email" required placeholder="name@company.com" autocomplete="off" spellcheck="false" aria-describedby="memberMsg"></label>
+            <label>Role<select name="role"><option>viewer</option><option>admin</option><option>owner</option></select></label>
+            <label class="grow">Password<input name="password" type="password" placeholder="leave empty to generate" autocomplete="new-password"></label>
+            <button class="btn primary" type="submit">Add member</button>
+          </form>
+          <p id="memberMsg" class="msg bad" role="alert"></p>
+        </section>
+      </div>
+    </section>
+
+    <section data-view="ask" aria-labelledby="h-ask" hidden>
+      <div class="title">
+        <h1 id="h-ask" tabindex="-1">Ask <em>and explain</em></h1>
+        <p class="sub">Why a request was blocked, and what happened while you were away.</p>
+      </div>
+      <div id="ai" class="grid top"></div>
+    </section>
+
     <section data-view="policy" aria-labelledby="h-policy" hidden>
       <div class="title">
         <h1 id="h-policy" tabindex="-1">Policy, <em>hot reloaded</em></h1>
@@ -195,25 +264,37 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 </main>
 
 <section id="login" class="login" hidden>
-  <form id="loginForm" class="card lcard">
+  <form id="loginForm" class="card lcard" novalidate>
     <div class="lhead">
       <img src="logo.svg" alt="" width="28" height="28">
-      <h1>Sign in to <em>LimitPlane</em></h1>
-      <p>Use the admin key the gateway was started with.</p>
+      <h1 id="loginTitle">Sign in to <em>LimitPlane</em></h1>
+      <p id="loginSub">Use your email and password.</p>
     </div>
-    <input type="text" autocomplete="username" value="admin" hidden>
-    <label for="key" class="micro">Admin key</label>
-    <div class="cmd">
-      <div class="cpill">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.6 8.4 13.5 2.5M11 5l2 2"/></svg>
-        <input id="key" type="password" autocomplete="current-password" required aria-describedby="loginMsg" spellcheck="false">
-        <button id="keyShow" class="ibtn" type="button" aria-label="Show key" aria-pressed="false">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
-        </button>
+    <div id="fUser" class="lfields">
+      <label id="lOrgL" hidden>Organisation<input id="lOrg" autocomplete="organization" placeholder="Acme Corp"></label>
+      <label>Email<input id="email" type="email" autocomplete="username" spellcheck="false" aria-describedby="loginMsg"></label>
+      <label>Password<input id="password" type="password" autocomplete="current-password" aria-describedby="loginMsg"></label>
+      <button id="userGo" class="btn primary" type="submit">Sign in</button>
+    </div>
+    <div id="fKey" hidden>
+      <input type="text" autocomplete="username" value="admin" hidden>
+      <label for="key" class="micro">Admin key</label>
+      <div class="cmd">
+        <div class="cpill">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.6 8.4 13.5 2.5M11 5l2 2"/></svg>
+          <input id="key" type="password" autocomplete="current-password" aria-describedby="loginMsg" spellcheck="false">
+          <button id="keyShow" class="ibtn" type="button" aria-label="Show key" aria-pressed="false">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+          </button>
+        </div>
+        <button class="btn primary" type="submit">Open dashboard</button>
       </div>
-      <button class="btn primary" type="submit">Open dashboard</button>
     </div>
     <p id="loginMsg" class="msg bad" role="alert"></p>
+    <p class="lalt">
+      <button id="modeKey" class="link" type="button">Use the admin key</button>
+      <button id="modeSignup" class="link" type="button" hidden>Create an org</button>
+    </p>
   </form>
 </section>
 
@@ -223,9 +304,11 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <button id="dClose" class="ibtn" type="button" aria-label="Close inspector"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
   </div>
   <p id="dWhy" class="why"></p>
+  <div id="dAI" aria-live="polite"></div>
   <div class="dact">
     <button id="dBan" class="btn primary" type="button">Ban client 10 min</button>
     <button id="dFilter" class="btn" type="button">Only this client</button>
+    <button id="dExplain" class="btn" type="button">Explain</button>
     <button id="dCopy" class="btn" type="button">Copy JSON</button>
   </div>
   <dl id="dList" class="kv cv"></dl>
@@ -238,12 +321,31 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
     <div><dt><kbd><span class="mod">⌘</span>K</kbd></dt><dd>Open the command palette</dd></div>
     <div><dt><kbd>/</kbd></dt><dd>Filter the decision feed</dd></div>
     <div><dt><kbd>p</kbd></dt><dd>Pause or resume the feed</dd></div>
-    <div><dt><kbd>1</kbd> – <kbd>4</kbd></dt><dd>Overview, Clients, Policy, Try it</dd></div>
+    <div><dt><kbd>1</kbd> – <kbd>6</kbd></dt><dd>Views, in tab order</dd></div>
     <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector or a dialog</dd></div>
     <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Read the chart second by second</dd></div>
     <div><dt><kbd><span class="mod">⌘</span>S</kbd></dt><dd>Save the policy while editing</dd></div>
   </dl>
   <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
+<dialog id="secret" class="dlg help" aria-labelledby="secretTitle">
+  <h2 id="secretTitle">New API key</h2>
+  <p id="secretWhy" class="why"></p>
+  <div class="secretbox"><code id="secretVal"></code><button id="secretCopy" class="btn small" type="button">Copy</button></div>
+  <p class="meta">Copy it now: it is stored only as a hash, so you won't see it again.</p>
+  <form method="dialog"><button class="btn">Done</button></form>
+</dialog>
+
+<dialog id="pwDlg" class="dlg help" aria-labelledby="pwTitle">
+  <h2 id="pwTitle">Change password</h2>
+  <form id="pwForm" class="lfields" novalidate>
+    <label>Current password<input name="current" type="password" autocomplete="current-password" required aria-describedby="pwMsg"></label>
+    <label>New password<input name="password" type="password" autocomplete="new-password" required minlength="10" aria-describedby="pwMsg"></label>
+    <p class="meta">At least 10 characters. Your other sessions end.</p>
+    <p id="pwMsg" class="msg bad" role="alert"></p>
+    <div class="dact"><button class="btn primary" type="submit">Change password</button><button id="pwCancel" class="btn" type="button">Cancel</button></div>
+  </form>
 </dialog>
 
 <dialog id="palette" class="dlg palette" aria-label="Command palette">
@@ -259,5 +361,6 @@ try { const t = localStorage.getItem('lp-theme'); if (t) document.documentElemen
 <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
 <script src="globe.js"></script>
 <script src="app.js"></script>
+<script src="ai.js"></script>
 </body>
 </html>

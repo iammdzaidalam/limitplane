@@ -60,6 +60,7 @@ type Route struct {
 type Tenant struct {
 	ID   string `json:"id"`
 	Tier string `json:"tier"`
+	Org  string `json:"org,omitempty"` // places the tenant in an org here, instead of from the org directory
 }
 
 type Config struct {
@@ -78,4 +79,30 @@ type Match struct {
 	Cost   int64
 	Anon   bool
 	Lanes  *[numLanes]int64 // the tier's burst per Lane; nil when it has no lanes
+	Org    string           // the tenant's org; "" for none
+	// OrgMonth is the org's shared monthly budget; 0 means none.
+	OrgMonth int64
+}
+
+// Orgs is what the org directory adds to a policy: orgs and their budgets, tenants it places in
+// an org or creates, and the API keys created for those, by hash.
+type Orgs struct {
+	Budgets map[string]int64     // org id -> monthly budget, 0 for none; lists every org
+	Tenants map[string]OrgTenant // tenant id ->
+	Keys    map[[32]byte]string  // sha256 of an API key -> tenant id (a tenant with a Tier)
+}
+
+type OrgTenant struct {
+	Org  string // "" for none
+	Tier string // set for tenants created in the directory; empty places a policy tenant
+}
+
+// TenantInfo is one tenant as the admin plane lists it.
+type TenantInfo struct {
+	ID      string `json:"id"`
+	Tier    string `json:"tier"`
+	Org     string `json:"org,omitempty"`
+	Monthly int64  `json:"monthly,omitempty"`
+	Managed bool   `json:"managed,omitempty"` // created in the org directory (dashboard), not the policy
+	Pinned  bool   `json:"pinned,omitempty"`  // its org is set by the policy (file or Tenant CR)
 }

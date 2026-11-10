@@ -45,11 +45,27 @@ func (s *switchable) Check(ctx context.Context, q Request) (Result, error) {
 	return s.Memory.Check(ctx, q)
 }
 
-func (s *switchable) Used(ctx context.Context, k string) (int64, error) {
+func (s *switchable) Used(ctx context.Context, k string) (int64, error) { return s.UsedIn(ctx, k, "") }
+
+func (s *switchable) UsedIn(ctx context.Context, k, org string) (int64, error) {
 	if err := s.failing(); err != nil {
 		return 0, err
 	}
-	return s.Memory.Used(ctx, k)
+	return s.Memory.UsedIn(ctx, k, org)
+}
+
+func (s *switchable) OrgUsed(ctx context.Context, org string) (int64, error) {
+	if err := s.failing(); err != nil {
+		return 0, err
+	}
+	return s.Memory.OrgUsed(ctx, org)
+}
+
+func (s *switchable) Move(ctx context.Context, k, from, to string) error {
+	if err := s.failing(); err != nil {
+		return err
+	}
+	return s.Memory.Move(ctx, k, from, to)
 }
 
 func (s *switchable) Ban(ctx context.Context, b Ban) error {

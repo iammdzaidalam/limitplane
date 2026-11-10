@@ -21,6 +21,8 @@ const (
 	seriesSize = 120
 	queueSize  = 8192
 	anonLabel  = "anon"
+	clientTTL  = 15 * time.Minute // how long a client counts as one of a tenant's, for scoped views
+	maxClients = 50000
 )
 
 // Check-latency buckets in seconds: local GCRA is ~µs, a Redis round trip ~ms.
@@ -39,6 +41,29 @@ type point struct {
 
 type counts struct{ Allowed, Blocked int64 }
 
+// agg is the totals, per-second series and block reasons, for everyone or for one org.
+type agg struct {
+	series   [seriesSize]point
+	total    counts
+	byReason map[string]int64
+}
+
+func (a *agg) add(d gateway.Decision) {
+	sec := d.Time.Unix()
+	p := &a.series[sec%seriesSize]
+	if p.T != sec {
+		*p = point{T: sec}
+	}
+	if d.Allowed {
+		p.Allowed++
+		a.total.Allowed++
+	} else {
+		p.Blocked++
+		a.total.Blocked++
+		a.byReason[d.Reason]++
+	}
+}
+
 // Hub fans each decision out to the audit ring, stats, metrics, SSE and the autopilot.
 // The request path only does a non-blocking channel send; one goroutine does the rest,
 // so request goroutines never contend on the stats lock or pay for JSON encoding.
@@ -52,9 +77,9 @@ type Hub struct {
 	mu        sync.Mutex
 	audit     [auditSize]gateway.Decision
 	auditN    int // total ever written
-	series    [seriesSize]point
-	total     counts
-	byReason  map[string]int64
+	all       agg
+	orgs      map[string]*agg             // by the org stamped on the decision
+	seen      map[string]map[string]int64 // client -> tenant -> last seen, unix seconds
 	tenants   map[string]*counts
 	decisions map[[2]string]int64 // {tenant label, reason}
 	degraded  int64
@@ -64,7 +89,7 @@ type Hub struct {
 	tenantSet map[string]string
 
 	subMu sync.Mutex
-	subs  map[chan []byte]struct{}
+	subs  map[chan []byte]func(event string, v any) bool
 
 	quota sync.Map // tenant -> *quotaGauge, written on the request path
 }
@@ -75,8 +100,9 @@ type quotaGauge struct{ ratio, at atomic.Int64 }
 func NewHub(observe func(gateway.Decision), known func() map[string]string) *Hub {
 	h := &Hub{
 		in: make(chan event, queueSize), observe: observe, known: known, done: make(chan struct{}),
-		byReason: map[string]int64{}, tenants: map[string]*counts{}, decisions: map[[2]string]int64{},
-		subs: map[chan []byte]struct{}{},
+		all: agg{byReason: map[string]int64{}}, orgs: map[string]*agg{}, seen: map[string]map[string]int64{},
+		tenants: map[string]*counts{}, decisions: map[[2]string]int64{},
+		subs: map[chan []byte]func(string, any) bool{},
 	}
 	if known != nil {
 		h.tenantSet = known()
@@ -99,24 +125,42 @@ func (h *Hub) Run(ctx context.Context) {
 	defer close(h.done)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case e := <-h.in:
 			h.process(e)
-		case <-tick.C:
+		case t := <-tick.C:
+			var ks map[string]string
 			if h.known != nil {
-				ks := h.known()
-				h.mu.Lock()
-				h.tenantSet = ks
-				h.mu.Unlock()
+				ks = h.known()
 			}
+			h.mu.Lock()
+			if ks != nil {
+				h.tenantSet = ks
+			}
+			if ticks++; ticks%10 == 0 {
+				h.prune(t.Add(-clientTTL).Unix())
+			}
+			h.mu.Unlock()
 		}
 	}
 }
 
 func (h *Hub) Done() <-chan struct{} { return h.done }
+
+// Refresh rereads the known tenants now, instead of on the next tick.
+func (h *Hub) Refresh() {
+	if h.known == nil {
+		return
+	}
+	ks := h.known()
+	h.mu.Lock()
+	h.tenantSet = ks
+	h.mu.Unlock()
+}
 
 // Quota records a tenant's monthly usage for limitplane_quota_used_ratio. It takes no lock:
 // after a tenant's first call it is a sync.Map hit and three atomic stores.
@@ -143,10 +187,21 @@ func (h *Hub) process(e event) {
 	h.audit[h.auditN%auditSize] = d
 	h.auditN++
 
-	sec := d.Time.Unix()
-	p := &h.series[sec%seriesSize]
-	if p.T != sec {
-		*p = point{T: sec}
+	h.all.add(d)
+	if d.Org != "" {
+		a := h.orgs[d.Org]
+		if a == nil {
+			a = &agg{byReason: map[string]int64{}}
+			h.orgs[d.Org] = a
+		}
+		a.add(d)
+	}
+	if ts := h.seen[d.Client]; ts != nil || len(h.seen) < maxClients {
+		if ts == nil {
+			ts = map[string]int64{}
+			h.seen[d.Client] = ts
+		}
+		ts[d.Tenant] = d.Time.Unix()
 	}
 	c := h.tenants[label]
 	if c == nil {
@@ -154,14 +209,9 @@ func (h *Hub) process(e event) {
 		h.tenants[label] = c
 	}
 	if d.Allowed {
-		p.Allowed++
-		h.total.Allowed++
 		c.Allowed++
 	} else {
-		p.Blocked++
-		h.total.Blocked++
 		c.Blocked++
-		h.byReason[d.Reason]++
 	}
 	h.decisions[[2]string{label, d.Reason}]++
 	if d.Degraded {
@@ -180,7 +230,37 @@ func (h *Hub) process(e event) {
 	}
 }
 
-// Publish sends an SSE event to every subscriber, skipping any whose buffer is full.
+// prune forgets client-tenant pairs not seen since before. Callers hold mu.
+func (h *Hub) prune(before int64) {
+	for c, ts := range h.seen {
+		for t, at := range ts {
+			if at < before {
+				delete(ts, t)
+			}
+		}
+		if len(ts) == 0 {
+			delete(h.seen, c)
+		}
+	}
+}
+
+// ClientsOf is every client that sent a kept tenant traffic in the last clientTTL.
+func (h *Hub) ClientsOf(keep func(tenant string) bool) map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]bool{}
+	for c, ts := range h.seen {
+		for t := range ts {
+			if keep(t) {
+				out[c] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// Publish sends an SSE event to every subscriber whose filter keeps it, skipping any whose buffer is full.
 func (h *Hub) Publish(event string, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -189,7 +269,10 @@ func (h *Hub) Publish(event string, v any) {
 	msg := []byte("event: " + event + "\ndata: " + string(b) + "\n\n")
 	h.subMu.Lock()
 	defer h.subMu.Unlock()
-	for ch := range h.subs {
+	for ch, keep := range h.subs {
+		if keep != nil && !keep(event, v) {
+			continue
+		}
 		select {
 		case ch <- msg:
 		default: // slow consumer: drop rather than stall the hub
@@ -197,10 +280,12 @@ func (h *Hub) Publish(event string, v any) {
 	}
 }
 
-func (h *Hub) Subscribe() chan []byte {
+// Subscribe returns a channel of SSE messages; keep (nil: all) chooses which. It runs on the
+// publisher's goroutine with the subscriber lock held, so it must be quick and not call back in.
+func (h *Hub) Subscribe(keep func(event string, v any) bool) chan []byte {
 	ch := make(chan []byte, 64)
 	h.subMu.Lock()
-	h.subs[ch] = struct{}{}
+	h.subs[ch] = keep
 	h.subMu.Unlock()
 	return ch
 }
@@ -212,13 +297,17 @@ func (h *Hub) Unsubscribe(ch chan []byte) {
 }
 
 // Audit returns up to limit decisions, newest first.
-func (h *Hub) Audit(limit int) []gateway.Decision {
+func (h *Hub) Audit(limit int) []gateway.Decision { return h.AuditOf(limit, nil) }
+
+// AuditOf returns up to limit decisions that keep (nil: all) accepts, newest first.
+func (h *Hub) AuditOf(limit int, keep func(gateway.Decision) bool) []gateway.Decision {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	n := min(limit, h.auditN, auditSize)
-	out := make([]gateway.Decision, n)
-	for i := range n {
-		out[i] = h.audit[(h.auditN-1-i)%auditSize]
+	out := make([]gateway.Decision, 0, min(limit, h.auditN, auditSize))
+	for i := 0; i < min(h.auditN, auditSize) && len(out) < limit; i++ {
+		if d := h.audit[(h.auditN-1-i)%auditSize]; keep == nil || keep(d) {
+			out = append(out, d)
+		}
 	}
 	return out
 }
@@ -230,6 +319,7 @@ type stats struct {
 	ByReason map[string]int64 `json:"byReason"` // blocked decisions only
 	Tenants  []tenantStats    `json:"tenants"`
 	Series   []point          `json:"series"`
+	Org      *orgView         `json:"org,omitempty"` // the org in view, with its budget
 	Degraded bool             `json:"degraded"`
 	Backend  string           `json:"backend"`
 	Kube     bool             `json:"kube"`
@@ -239,25 +329,36 @@ type stats struct {
 type tenantStats struct {
 	Tenant       string `json:"tenant"`
 	Tier         string `json:"tier"`
+	Org          string `json:"org,omitempty"`
 	Allowed      int64  `json:"allowed"`
 	Blocked      int64  `json:"blocked"`
 	MonthlyUsed  int64  `json:"monthlyUsed"`
 	MonthlyLimit int64  `json:"monthlyLimit"`
 }
 
-// snapshot returns totals, the last 120s oldest first (gaps zero-filled), and per-label counts.
-func (h *Hub) snapshot(now time.Time) (stats, map[string]counts) {
+// snapshot returns totals, the last 120s oldest first (gaps zero-filled), and per-label counts,
+// for everyone (org "") or for one org.
+func (h *Hub) snapshot(now time.Time, org string) (stats, map[string]counts) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	a := &h.all
+	if org != "" {
+		if a = h.orgs[org]; a == nil {
+			a = &agg{}
+		}
+	}
 	s := stats{
-		Total: h.total.Allowed + h.total.Blocked, Allowed: h.total.Allowed, Blocked: h.total.Blocked,
-		ByReason: maps.Clone(h.byReason), Series: make([]point, seriesSize),
+		Total: a.total.Allowed + a.total.Blocked, Allowed: a.total.Allowed, Blocked: a.total.Blocked,
+		ByReason: maps.Clone(a.byReason), Series: make([]point, seriesSize),
 		Degraded: !h.lastDeg.IsZero() && now.Sub(h.lastDeg) < 10*time.Second,
+	}
+	if s.ByReason == nil {
+		s.ByReason = map[string]int64{}
 	}
 	end := now.Unix()
 	for i := range seriesSize {
 		t := end - seriesSize + 1 + int64(i)
-		p := h.series[t%seriesSize]
+		p := a.series[t%seriesSize]
 		if p.T != t {
 			p = point{T: t}
 		}

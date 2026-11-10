@@ -21,7 +21,7 @@ type operator struct {
 	done    chan struct{}
 }
 
-func newOperator(store *policy.Store, limits limiter.Meter, policyName string) (*operator, error) {
+func newOperator(store *policy.Store, limits limiter.Backend, policyName string) (*operator, error) {
 	c, err := kube.InCluster()
 	if err != nil {
 		return nil, err
@@ -36,7 +36,7 @@ func newOperator(store *policy.Store, limits limiter.Meter, policyName string) (
 		ctl.Owner = &kube.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: id, UID: uid}
 	}
 	ctl.Usage = func(ctx context.Context, tenant string, _ int64) int64 {
-		used, _ := limits.Used(ctx, tenant)
+		used, _ := limits.UsedIn(ctx, tenant, store.OrgOf(tenant))
 		return used
 	}
 	el.OnChange = func(bool) { ctl.Kick() } // a new leader brings status up to date at once

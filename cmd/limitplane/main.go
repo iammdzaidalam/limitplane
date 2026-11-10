@@ -19,7 +19,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/iammdzaidalam/limitplane/internal/ai"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
+	"github.com/iammdzaidalam/limitplane/internal/org"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 	"github.com/iammdzaidalam/limitplane/internal/redisx"
 	"github.com/iammdzaidalam/limitplane/internal/server"
@@ -49,6 +51,13 @@ func run() error {
 	kubeMode := flag.Bool("kube", os.Getenv("LIMITPLANE_KUBE") == "1", "in-cluster operator mode: policy and tenants come from CRDs")
 	kubePolicy := flag.String("kube-policy", "default", "RateLimitPolicy to apply (--kube)")
 	replicas := flag.Int("replicas", envInt("LIMITPLANE_REPLICAS", 1), "replicas sharing Redis; while it is down each falls back to 1/n of the budget (--kube counts them itself)")
+	dataDir := flag.String("data-dir", os.Getenv("LIMITPLANE_DATA_DIR"), "without --redis, keep orgs, users and dashboard API keys in <dir>/orgs.json (empty: in memory only)")
+	signup := flag.Bool("signup", os.Getenv("LIMITPLANE_SIGNUP") == "1", "let anyone sign up, creating an org they own (default: invite only)")
+	aiMode := flag.String("ai", env("LIMITPLANE_AI", "auto"), "explanations and ops chat: auto, anthropic, openai or off; rules answer either way (keys: ANTHROPIC_API_KEY, LIMITPLANE_AI_KEY)")
+	aiModel := flag.String("ai-model", os.Getenv("LIMITPLANE_AI_MODEL"), "model id (default claude-haiku-5-5 on Anthropic; required for openai)")
+	aiBase := flag.String("ai-base-url", os.Getenv("LIMITPLANE_AI_BASE_URL"), "OpenAI-compatible API, e.g. https://api.groq.com/openai/v1 or http://localhost:11434/v1")
+	aiShareIPs := flag.Bool("ai-share-ips", false, "send raw client IPs to the model (default: keyed hashes)")
+	aiCalls := flag.Int("ai-calls-per-hour", envInt("LIMITPLANE_AI_CALLS_PER_HOUR", 60), "model calls allowed per hour (fleet-wide with Redis)")
 	flag.Parse()
 
 	cfg, err := loadConfig(*cfgPath)
@@ -78,9 +87,13 @@ func run() error {
 		defer red.Close()
 	}
 
+	dir, err := openDirectory(*redisURL, *dataDir)
+	if err != nil {
+		return err
+	}
 	store := policy.NewStore(cfg)
 	sc := server.Config{
-		Policy: store, Limits: limits, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
+		Policy: store, Limits: limits, Dir: dir, Signup: *signup, AdminKey: *adminKey, MetricsKey: *metricsKey, Backend: backend,
 		TrustProxy: *trust, FailClosed: *failClosed, Dashboard: web.FS, Kube: *kubeMode,
 	}
 	if *kubeMode {
@@ -88,6 +101,9 @@ func run() error {
 			return err
 		}
 		sc.Leader, sc.OnBan, sc.OnAlert = op.elector.IsLeader, op.banned, op.alert
+	}
+	if sc.AI, err = aiConfig(ai.Options{Provider: *aiMode, Model: *aiModel, BaseURL: *aiBase}, *aiShareIPs, *aiCalls, *redisURL); err != nil {
+		return err
 	}
 	srv := server.New(sc)
 
@@ -111,6 +127,7 @@ func run() error {
 	if red != nil {
 		go syncRedis(ctx, red, *failClosed)
 		go red.Watch(ctx) // bans from other replicas, as they happen
+		go dir.Watch(ctx) // orgs, users, revocations and keys from other replicas
 	}
 	if op != nil {
 		// --config, if given, is only the startup policy: the CRDs own it from here.
@@ -186,6 +203,52 @@ func newBackend(redisURL string, failClosed bool, replicas func() int) (limiter.
 		return red, red, nil
 	}
 	return limiter.NewFallback(red, mem, replicas), red, nil
+}
+
+// openDirectory is where orgs, users and dashboard keys live: Redis when there is one, so every
+// replica shares them; else a file under dataDir; else memory. A Redis that is down at startup is
+// retried by Watch; until then only the admin key can sign in.
+func openDirectory(redisURL, dataDir string) (*org.Directory, error) {
+	switch {
+	case redisURL != "":
+		c, err := redisx.New(redisURL)
+		if err != nil {
+			return nil, fmt.Errorf("redis: %w", err)
+		}
+		d := org.NewRedis(c)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := d.Load(ctx); err != nil {
+			log.Printf("orgs: redis not reachable yet (%v), retrying; only the admin key can sign in meanwhile", err)
+		}
+		return d, nil
+	case dataDir != "":
+		return org.OpenFile(dataDir)
+	}
+	log.Print("orgs: kept in memory only; set --data-dir or --redis to keep them across restarts")
+	return org.NewMemory(), nil
+}
+
+// aiConfig picks the model (none: rules only) and, with Redis, keeps incidents there so they
+// survive restarts and every replica remembers the same ones.
+func aiConfig(o ai.Options, shareIPs bool, perHour int, redisURL string) (ai.Config, error) {
+	prov, err := ai.NewProvider(o, os.Getenv)
+	if err != nil {
+		return ai.Config{}, err
+	}
+	calls := int64(max(perHour, 1))
+	c := ai.Config{Provider: prov, ShareIPs: shareIPs, Calls: limiter.Rate{Limit: calls, Period: time.Hour, Burst: min(calls, 10)}}
+	if redisURL != "" {
+		rc, err := redisx.New(redisURL)
+		if err != nil {
+			return ai.Config{}, fmt.Errorf("redis: %w", err)
+		}
+		c.Store = ai.RedisStore{R: rc}
+	}
+	if prov != nil {
+		log.Printf("ai: %s, at most %d model calls an hour", prov.Name(), calls)
+	}
+	return c, nil
 }
 
 // syncRedis reads the ban list back every 2s (repairing anything pub/sub missed, pushing bans

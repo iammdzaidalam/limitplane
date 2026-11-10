@@ -184,18 +184,26 @@ func build(pol RateLimitPolicy, tenants map[string]Tenant, secrets map[string]Se
 	json.Unmarshal(spec["tiers"], &tiers)
 
 	keys := map[string]policy.Tenant{}
+	orgOf := map[string]string{} // tenant id -> org: every Tenant of one id must agree
 	for _, name := range slices.Sorted(maps.Keys(tenants)) {
 		t := tenants[name].Spec
 		key, reason, msg := apiKey(t, tiers, secrets)
 		if prev, dup := keys[key]; reason == "" && dup {
 			reason, msg = "DuplicateKey", "API key already used by tenant "+prev.ID
 		}
+		if o, seen := orgOf[t.ID]; reason == "" && seen && o != t.Org {
+			reason, msg = "OrgConflict", fmt.Sprintf("another Tenant with id %s is in org %q", t.ID, o)
+		}
 		if reason != "" {
 			conds[name] = notReady(reason, msg)
 			continue
 		}
-		keys[key] = policy.Tenant{ID: t.ID, Tier: t.Tier}
-		conds[name] = Condition{Type: "Ready", Status: "True", Reason: "Active", Message: "tier " + t.Tier}
+		keys[key], orgOf[t.ID] = policy.Tenant{ID: t.ID, Tier: t.Tier, Org: t.Org}, t.Org
+		msg = "tier " + t.Tier
+		if t.Org != "" {
+			msg += ", org " + t.Org
+		}
+		conds[name] = Condition{Type: "Ready", Status: "True", Reason: "Active", Message: msg}
 	}
 	spec["keys"], _ = json.Marshal(keys)
 	b, _ := json.Marshal(spec)
@@ -214,6 +222,9 @@ func apiKey(t TenantSpec, tiers map[string]json.RawMessage, secrets map[string]S
 	ref := t.KeySecretRef
 	if t.ID == "" {
 		return "", "InvalidSpec", "spec.id is empty"
+	}
+	if t.Org != "" && (!policy.ValidOrg(t.Org) || strings.ContainsAny(t.ID, "{}")) {
+		return "", "InvalidSpec", "spec.org must be an org id (lowercase letters, digits, dashes), and spec.id then has no braces"
 	}
 	if _, ok := tiers[t.Tier]; !ok {
 		return "", "UnknownTier", fmt.Sprintf("tier %q is not in the RateLimitPolicy", t.Tier)

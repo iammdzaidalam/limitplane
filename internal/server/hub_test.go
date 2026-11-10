@@ -35,7 +35,7 @@ func TestHubStatsAndMetrics(t *testing.T) {
 	h.process(event{d: gateway.Decision{Time: now, Tenant: "anonymous", Reason: "burst", Degraded: true}})
 	h.process(event{d: gateway.Decision{Time: now, Tenant: "evil\"tenant", Reason: "burst"}})
 
-	s, per := h.snapshot(now)
+	s, per := h.snapshot(now, "")
 	if s.Total != 3 || s.Allowed != 1 || s.ByReason["burst"] != 2 || !s.Degraded {
 		t.Fatalf("bad totals %+v", s)
 	}
@@ -79,7 +79,7 @@ func TestHubStatsAndMetrics(t *testing.T) {
 
 func TestHubNeverBlocks(t *testing.T) {
 	h := newTestHub()
-	slow := h.Subscribe() // never read
+	slow := h.Subscribe(nil) // never read
 	defer h.Unsubscribe(slow)
 	done := make(chan struct{})
 	go func() {

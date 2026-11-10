@@ -37,8 +37,9 @@ type fallback struct {
 }
 
 // NewFallback answers from backup, marked Degraded, while primary is failing. Every replica then
-// limits on its own, so each gets 1/replicas() of the budget; nil replicas means 1.
-// The backup's monthly counts start from zero, so a long outage can over-admit.
+// limits on its own, so each gets 1/replicas() of the budget (burst, monthly cap and org budget);
+// nil replicas means 1. The backup's monthly counts start from zero, so an outage can admit up to
+// about one more month's cap across the fleet.
 func NewFallback(primary, backup Backend, replicas func() int) Backend {
 	if replicas == nil {
 		replicas = func() int { return 1 }
@@ -72,7 +73,9 @@ func (f *fallback) Allow(ctx context.Context, key string, r Rate, cost int64) (R
 func (f *fallback) Check(ctx context.Context, q Request) (Result, error) {
 	res, deg, err := run(ctx, f, func(b Backend, deg bool) (Result, error) {
 		if deg {
-			q.Rate = share(q.Rate, f.replicas(), q.Cost)
+			n := f.replicas()
+			q.Rate = share(q.Rate, n, q.Cost)
+			q.Month, q.OrgMonth = part(q.Month, n, q.Cost), part(q.OrgMonth, n, q.Cost)
 		}
 		return b.Check(ctx, q)
 	})
@@ -81,8 +84,22 @@ func (f *fallback) Check(ctx context.Context, q Request) (Result, error) {
 }
 
 func (f *fallback) Used(ctx context.Context, key string) (int64, error) {
-	n, _, err := run(ctx, f, func(b Backend, _ bool) (int64, error) { return b.Used(ctx, key) })
+	return f.UsedIn(ctx, key, "")
+}
+
+func (f *fallback) UsedIn(ctx context.Context, key, org string) (int64, error) {
+	n, _, err := run(ctx, f, func(b Backend, _ bool) (int64, error) { return b.UsedIn(ctx, key, org) })
 	return n, err
+}
+
+func (f *fallback) OrgUsed(ctx context.Context, org string) (int64, error) {
+	n, _, err := run(ctx, f, func(b Backend, _ bool) (int64, error) { return b.OrgUsed(ctx, org) })
+	return n, err
+}
+
+func (f *fallback) Move(ctx context.Context, key, from, to string) error {
+	_, _, err := run(ctx, f, func(b Backend, _ bool) (struct{}, error) { return struct{}{}, b.Move(ctx, key, from, to) })
+	return err
 }
 
 func (f *fallback) Ban(ctx context.Context, x Ban) error {
@@ -108,4 +125,12 @@ func share(r Rate, n int, cost int64) Rate {
 		return r
 	}
 	return Rate{Limit: r.Limit, Period: r.Period * time.Duration(n), Burst: max(r.burst()/int64(n), cost)}
+}
+
+// part is one replica's share of a monthly cap (0: none), never below cost.
+func part(cap int64, n int, cost int64) int64 {
+	if cap <= 0 || n <= 1 {
+		return cap
+	}
+	return max(cap/int64(n), cost)
 }
