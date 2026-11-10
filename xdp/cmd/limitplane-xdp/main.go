@@ -22,9 +22,38 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	cmd := run
+	if len(os.Args) > 1 && os.Args[1] == "stats" {
+		cmd = stats
+	}
+	if err := cmd(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// stats prints the counters and live bans of the program a running loader attached.
+func stats() error {
+	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	iface := fs.String("iface", "", "interface the loader attached to (required)")
+	fs.Parse(os.Args[2:])
+	if *iface == "" {
+		return errors.New("usage: limitplane-xdp stats --iface <name>")
+	}
+	fp, err := fastpath.Open(*iface)
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+	c, err := fp.Counters()
+	if err != nil {
+		return err
+	}
+	n, err := fp.ActiveBans()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pass=%d drop_ban=%d drop_rate=%d bans=%d\n", c.Pass, c.DropBan, c.DropRate, n)
+	return nil
 }
 
 func run() error {
@@ -36,6 +65,7 @@ func run() error {
 	burst := flag.Uint64("burst", 0, "per-source burst in packets (0: same as --pps)")
 	every := flag.Duration("sync", time.Second, "ban sync interval")
 	metrics := flag.String("metrics", ":9102", "Prometheus listen address (empty: off)")
+	exemptList := flag.String("exempt", "", "comma-separated IPs/CIDRs never dropped: no ban, no pps guard")
 	flag.Parse()
 
 	if *iface == "" || *adminKey == "" {
@@ -51,13 +81,29 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var exempt []netip.Prefix
+	for f := range strings.SplitSeq(*exemptList, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+		p, err := fastpath.ParsePrefix(f)
+		if err != nil {
+			return fmt.Errorf("--exempt %q: %w", f, err)
+		}
+		exempt = append(exempt, p)
+	}
 
 	fp, err := fastpath.Attach(*iface, *mode == "generic", rate)
 	if err != nil {
 		return err
 	}
 	defer fp.Close()
-	log.Printf("attached to %s (%s), pps=%d burst=%d, syncing %s every %s", *iface, *mode, *pps, *burst, *gw, *every)
+	for _, p := range exempt {
+		if err := fp.Exempt(p); err != nil {
+			return fmt.Errorf("exempt %s: %w", p, err)
+		}
+	}
+	log.Printf("attached to %s (%s), pps=%d burst=%d, exempt=%v, syncing %s every %s", *iface, *mode, *pps, *burst, exempt, *gw, *every)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -74,7 +120,7 @@ func run() error {
 	}
 
 	g := &gateway{base: strings.TrimSuffix(*gw, "/"), key: *adminKey, hc: &http.Client{Timeout: 2 * time.Second}}
-	s := &syncer{m: fp, have: map[netip.Prefix]time.Time{}}
+	s := &syncer{m: fp, mono: fastpath.Monotonic, exempt: exempt, have: map[netip.Prefix]installed{}}
 	t := time.NewTicker(*every)
 	defer t.Stop()
 	for {
@@ -162,7 +208,7 @@ limitplane_xdp_packets_total{action="drop_rate"} %d
 # HELP limitplane_xdp_bans Prefixes in the kernel ban map.
 # TYPE limitplane_xdp_bans gauge
 limitplane_xdp_bans %d
-# HELP limitplane_xdp_bans_skipped Bans in the last sync whose client is not an IP or CIDR.
+# HELP limitplane_xdp_bans_skipped Bans in the last sync whose client is not an IP or CIDR, or is exempt.
 # TYPE limitplane_xdp_bans_skipped gauge
 limitplane_xdp_bans_skipped %d
 # HELP limitplane_xdp_sync_errors_total Failed ban syncs.

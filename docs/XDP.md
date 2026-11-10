@@ -19,7 +19,8 @@ packet ──> NIC driver ──> XDP fastpath: banned? drop · over pps? drop �
 
 1. Parse Ethernet, then up to two VLAN tags (802.1ad outer, 802.1Q inner), then the IPv4 or IPv6
    source address. Anything else (ARP, LLDP) passes.
-2. Look the source up in the `bans` trie. Hit: `XDP_DROP`, count `drop_ban`.
+2. Look the source up in the `bans` trie. An exempt entry passes at once, skipping step 3. A ban whose
+   deadline hasn't passed: `XDP_DROP`, count `drop_ban`. A lapsed one counts as a miss.
 3. Run one GCRA step for the source in the `rate` map, with the budget from the `config` map.
    Over budget: `XDP_DROP`, count `drop_rate`.
 4. Otherwise `XDP_PASS`, count `pass`.
@@ -31,7 +32,7 @@ structs and helper IDs are declared in the file, so any clang with a BPF target 
 
 | Map | Type | Key → value | Size |
 | --- | --- | --- | --- |
-| `bans` | LPM trie | prefix length + 16-byte address → 1 | 65,536 |
+| `bans` | LPM trie | prefix length + 16-byte address → deadline (ns, `CLOCK_MONOTONIC`; 0 none, 1 exempt) | 65,536 |
 | `rate` | LRU hash | 16-byte source → GCRA arrival time (ns) | 262,144 |
 | `config` | array | 0 → pps interval and burst (ns) | 1 |
 | `stats` | per-CPU array | pass / drop_ban / drop_rate → packets | 3 |
@@ -47,6 +48,30 @@ structs and helper IDs are declared in the file, so any clang with a BPF target 
 
 A trie lookup walks nodes, so it costs more than a hash lookup, but it is still small next to what the
 stack spends on a packet that it lets through.
+
+### Bans expire in the kernel
+
+Each ban carries its deadline on the clock `bpf_ktime_get_ns()` reads, so a ban lapses on time even if
+the loader hangs, is stopped, or can't reach the gateway. The test freezes the loader with `SIGSTOP` and
+watches a 1-minute ban stop dropping when it runs out.
+
+- **Wall clock to monotonic, every sync.** `/api/bans` gives a wall-clock `until`. The loader reads both
+  clocks together each sync and writes `now_mono + (until - now_wall)`. If a deadline drifts more than
+  100 ms from what is installed it is rewritten, so a wall-clock step (NTP, or a VM resuming: the
+  monotonic clock doesn't count suspend) is corrected within one tick. An offset taken once at startup
+  would carry every later step into every deadline. The slack absorbs read jitter and the millisecond
+  rounding of a Redis-backed gateway's TTLs.
+- **No expiry.** Gateway bans always have one (1 minute to 7 days). An `until` too far out for the clock
+  to hold is written as 0, which never lapses, rather than overflowing.
+- **Lapsed entries are a miss, not deleted by the program.** The verifier accepts `bpf_map_delete_elem`
+  on an LPM trie from XDP (checked on 6.12), but the loader stays the only writer: a program delete
+  racing a re-ban would erase the new ban while the loader believes it is installed, and the delete
+  takes the trie's lock in the packet path. The loader deletes lapsed entries on its next sync.
+- **Covering bans.** The trie returns only the longest match, so a lapsed /32 inside a live /24 would
+  let the host through. The loader writes each prefix with the latest deadline of any ban covering it.
+- **Exempt prefixes** (`--exempt`) are entries with the reserved value 1. Being more specific, they win
+  the longest match inside any wider ban, and the program passes them without the pps guard. A ban inside
+  an exempt prefix isn't installed. Use it for the management network, monitoring and your own balancer.
 
 ### Why a shared LRU hash for the pps guard
 
@@ -67,17 +92,24 @@ legitimate client sends: a single fast TCP upload can be tens of thousands of pa
    that client's requests immediately.
 2. `limitplane-xdp` logs in once (`POST /api/login`; the token lasts 12h and is renewed on a 401) and
    polls `GET /api/bans` every second.
-3. It diffs the list against what it installed: new bans are added, lifted or expired ones deleted. A
-   steady state makes no syscalls. Writes that fail are retried on the next tick.
+3. It diffs the list against what it installed: new bans are added, lifted or expired ones deleted,
+   changed deadlines rewritten. A steady state makes no syscalls. Writes that fail are retried next tick.
 4. From then on the client's packets die in the driver: no skb, no TCP handshake, no Go goroutine.
 
 So the gateway enforces a ban at once and the NIC enforces it within about a second. Failure modes:
 
 - **Gateway unreachable:** keep enforcing the bans already installed until their own expiry, so a gateway
   restart doesn't open the gates. `limitplane_xdp_sync_errors_total` counts failures.
+- **Loader hung or stopped:** bans still lapse on time in the kernel; unbans wait until it runs again.
 - **Loader exits or crashes:** the program is attached through a BPF link owned by the process, so the
   kernel detaches it when the process dies. The fast path fails open; the gateway still enforces bans.
-- **Ban client that isn't an IP or CIDR:** skipped and counted in `limitplane_xdp_bans_skipped`.
+  Pinning the link would keep the program after the loader is gone, but nothing could then lift a ban:
+  an admin's unban, or a false-positive autopilot ban on a customer, would hold at the NIC for up to
+  7 days after the gateway let them back. Failing open loses the cheap drop and the pps guard, not the
+  ban. Run the loader under a supervisor (`Restart=always`); it re-attaches and resyncs in its first
+  tick. The map isn't pinned either, so if the gateway is down at that moment the NIC has no bans until
+  it answers.
+- **Ban client that isn't an IP or CIDR, or is exempt:** skipped and counted in `limitplane_xdp_bans_skipped`.
 
 ## Limits
 
@@ -95,7 +127,8 @@ So the gateway enforces a ban at once and the NIC enforces it within about a sec
   skb is built, on any interface; it still skips the rest of the stack, the socket and the gateway, but
   saves less. Many drivers refuse native XDP above a ~3.5 KB MTU, so jumbo frames may need generic mode.
 - **Bans cover everything** from that source, including SSH. The admin API on loopback never crosses the
-  NIC, so the loader can't lock itself out.
+  NIC, so the loader can't lock itself out; `--exempt` keeps a ban on a wide range off your own hosts.
+- **Clocks:** deadlines assume the loader and the gateway agree on wall time (same host, or NTP).
 - Needs Linux 5.9+ (BPF links for XDP) and root or `CAP_BPF` + `CAP_NET_ADMIN`.
 
 ## Running it
@@ -103,9 +136,15 @@ So the gateway enforces a ban at once and the NIC enforces it within about a sec
 ```bash
 cd xdp && go build ./cmd/limitplane-xdp
 sudo ./limitplane-xdp --iface eth0 --gateway http://127.0.0.1:8080 --pps 20000 --burst 40000
-#   --admin-key or LIMITPLANE_ADMIN_KEY; --mode generic; --metrics :9102; in proxy mode use
-#   --gateway http://127.0.0.1:8080/_limitplane
+#   --admin-key or LIMITPLANE_ADMIN_KEY; --mode generic; --metrics :9102; --exempt 10.0.0.0/8,192.0.2.7;
+#   in proxy mode use --gateway http://127.0.0.1:8080/_limitplane
+sudo ./limitplane-xdp stats --iface eth0
+# pass=11 drop_ban=9 drop_rate=0 bans=3
 ```
+
+`stats` reads the kernel maps of the program a running loader attached to that interface (found through
+its BPF link), so it works with `--metrics` off and while the loader is frozen. `bans` counts entries the
+program would drop on now, not lapsed or exempt ones.
 
 `--metrics` serves Prometheus text: `limitplane_xdp_packets_total{action="pass|drop_ban|drop_rate"}`,
 `limitplane_xdp_bans`, `limitplane_xdp_bans_skipped`, `limitplane_xdp_sync_errors_total`,
@@ -121,25 +160,38 @@ cd xdp && BPF2GO_CC=/opt/homebrew/opt/llvm/bin/clang BPF2GO_STRIP=/opt/homebrew/
 ## Local test (Docker)
 
 ```bash
-./xdp/test.sh
+./xdp/test.sh            # generic, then native
+./xdp/test.sh native     # one mode
 ```
 
-Runs in a privileged container (Docker Desktop's Linux VM works). Two network namespaces joined by a veth
-pair: `gw` runs the gateway and `limitplane-xdp --mode generic`, `cl` sends from several source IPs. It
-checks that a manual ban (IPv4 and IPv6) drops ping and HTTP while other sources pass, that an autopilot
-ban triggered by hammering the gateway reaches the NIC, that unban lifts it, that a CIDR ban covers its
-range, that a UDP flood is cut to the pps budget, and that SIGTERM detaches the program. From one run
-on an M-series Mac (kernel 6.12, generic mode on veth):
+Runs the whole suite once per XDP mode, each in a fresh privileged container (Docker Desktop's Linux VM
+works). It first runs the `fastpath` package's kernel tests: real program verdicts through
+`BPF_PROG_TEST_RUN` (bans with and without deadlines, lapsed, exempt, VLAN-tagged, IPv6 /64, the pps
+guard) and that `stats` finds a running program. Then two network namespaces joined by a veth pair: `gw`
+runs the gateway and `limitplane-xdp`, `cl` sends from several source IPs. It checks that a manual ban
+(IPv4 and IPv6) drops ping and HTTP while other sources pass, that an autopilot ban triggered by
+hammering the gateway reaches the NIC, that unban lifts it, that a UDP flood is cut to the pps budget,
+that a 1-minute ban lapses in the kernel while the loader is `SIGSTOP`ped (and the thawed loader then
+deletes it), that a CIDR ban covers its range except an exempt address, that `stats` agrees with
+`/metrics`, and that SIGTERM detaches the program. Native XDP on veth needs nothing on the peer for
+`XDP_DROP` and `XDP_PASS` (an XDP program or GRO on the peer only matters for `XDP_REDIRECT` into it).
+From two runs on an M-series Mac (kernel 6.12):
 
 ```
-== pps guard: UDP flood from 10.99.0.3 (budget 1000pps, burst 2000)
-      flood: sent=10217216 failed=0 seconds=3.00 pps=3405617
-      sink:  received=5037 seconds=5.00 pps=1007
-      drop_rate: 0 -> 10212179
+generic: all 41 checks passed
+      flood: sent=7089408 failed=0 seconds=3.00 pps=2363038
+      sink:  received=5036 seconds=5.00 pps=1007
+      drop_rate: 0 -> 7084372
+native: all 41 checks passed
+      flood: sent=2137600 failed=0 seconds=3.00 pps=712381
+      sink:  received=5000 seconds=5.01 pps=999
+      drop_rate: 0 -> 2129400
 ```
 
-3.4M packets per second dropped on one veth with generic XDP; the socket saw the 1,000 pps budget plus
-one burst.
+Over several runs the flood reached 2.1 to 2.4M pps in generic mode and 0.6 to 1.9M in native, all of
+it dropped but the 1,000 pps budget plus one burst. Native is slower here, not faster: veth hands the
+program an skb the sender already built, through a ring drained by NAPI on another CPU, instead of
+inline in the sender. The run proves the native path works; what it saves needs a real NIC.
 
 ## Azure test (optional, not run)
 

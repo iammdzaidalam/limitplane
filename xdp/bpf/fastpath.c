@@ -83,12 +83,16 @@ struct rate_cfg {
 	__u64 burst_ns;    // burst * interval_ns
 };
 
+// A ban's value is when it lapses, in bpf_ktime_get_ns() time (CLOCK_MONOTONIC), so bans run out on
+// schedule even if the loader is stuck. 0 never lapses. EXEMPT marks a prefix that is never dropped.
+#define EXEMPT 1
+
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
 	__uint(map_flags, BPF_F_NO_PREALLOC); // required for LPM tries
 	__uint(max_entries, 65536);
 	__type(key, struct ban_key);
-	__type(value, __u8);
+	__type(value, __u64);
 } bans SEC(".maps");
 
 // One theoretical arrival time (GCRA, the same algorithm as the gateway) per source.
@@ -123,12 +127,11 @@ static __always_inline int count(__u32 stat, int action) {
 
 // over_budget runs one GCRA step: admit if the new arrival time stays within burst of now.
 // Two CPUs can race on one source's slot; the worst case admits a few extra packets.
-static __always_inline int over_budget(struct src_key *src) {
+static __always_inline int over_budget(struct src_key *src, __u64 now) {
 	__u32 zero = 0;
 	struct rate_cfg *cfg = bpf_map_lookup_elem(&config, &zero);
 	if (!cfg || !cfg->interval_ns)
 		return 0;
-	__u64 now = bpf_ktime_get_ns();
 	__u64 *tat = bpf_map_lookup_elem(&rate, src);
 	if (!tat) {
 		__u64 next = now + cfg->interval_ns;
@@ -196,9 +199,17 @@ int fastpath(struct xdp_md *ctx) {
 		return count(STAT_PASS, XDP_PASS); // ARP, LLDP and friends
 	}
 
-	if (bpf_map_lookup_elem(&bans, &key))
-		return count(STAT_DROP_BAN, XDP_DROP);
-	if (over_budget(&src))
+	__u64 now = bpf_ktime_get_ns();
+	__u64 *until = bpf_map_lookup_elem(&bans, &key);
+	if (until) {
+		if (*until == EXEMPT)
+			return count(STAT_PASS, XDP_PASS); // skips the pps guard too
+		// A lapsed ban is a miss: the loader gives each prefix the latest deadline of any ban covering it,
+		// so nothing shorter is live either. The loader deletes it on its next sync.
+		if (!*until || now < *until)
+			return count(STAT_DROP_BAN, XDP_DROP);
+	}
+	if (over_budget(&src, now))
 		return count(STAT_DROP_RATE, XDP_DROP);
 	return count(STAT_PASS, XDP_PASS);
 }

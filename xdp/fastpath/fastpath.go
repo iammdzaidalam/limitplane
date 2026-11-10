@@ -68,6 +68,10 @@ func RateOf(pps, burst uint64) (Rate, error) {
 	return Rate{IntervalNS: interval, BurstNS: max(burst, 1) * interval}, nil
 }
 
+// Exempt is the ban value of a prefix the program always passes, skipping the pps guard. Any other value
+// is a CLOCK_MONOTONIC deadline in nanoseconds, 0 meaning none; past it the entry counts as a miss.
+const Exempt = 1
+
 // Counters are the per-CPU stats summed over CPUs.
 type Counters struct {
 	Pass, DropBan, DropRate uint64

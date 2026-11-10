@@ -18,17 +18,17 @@ import (
 
 // fakeMap records map writes; fail makes the next writes for a prefix error.
 type fakeMap struct {
-	m      map[netip.Prefix]bool
+	m      map[netip.Prefix]uint64
 	writes int
 	fail   map[netip.Prefix]bool
 }
 
-func (f *fakeMap) Ban(p netip.Prefix) error {
+func (f *fakeMap) Ban(p netip.Prefix, deadline uint64) error {
 	f.writes++
 	if f.fail[p] {
 		return errors.New("map full")
 	}
-	f.m[p] = true
+	f.m[p] = deadline
 	return nil
 }
 
@@ -50,9 +50,12 @@ func (f *fakeMap) keys() []string {
 	return out
 }
 
+// mono0 is the fake CLOCK_MONOTONIC reading at the wall time the tests call now.
+const mono0 = uint64(1000 * time.Hour)
+
 func newSyncer() (*syncer, *fakeMap) {
-	f := &fakeMap{m: map[netip.Prefix]bool{}, fail: map[netip.Prefix]bool{}}
-	return &syncer{m: f, have: map[netip.Prefix]time.Time{}}, f
+	f := &fakeMap{m: map[netip.Prefix]uint64{}, fail: map[netip.Prefix]bool{}}
+	return &syncer{m: f, mono: func() uint64 { return mono0 }, have: map[netip.Prefix]installed{}}, f
 }
 
 func TestApplyDiffs(t *testing.T) {
@@ -74,7 +77,7 @@ func TestApplyDiffs(t *testing.T) {
 	if got := f.keys(); !slices.Equal(got, []string{"198.51.100.0/24", "2001:db8::1/128", "203.0.113.7/32"}) {
 		t.Fatalf("map = %v", got)
 	}
-	if s.skipped != 1 || !s.have[netip.MustParsePrefix("203.0.113.7/32")].Equal(later.Add(time.Minute)) {
+	if s.skipped != 1 || !s.have[netip.MustParsePrefix("203.0.113.7/32")].until.Equal(later.Add(time.Minute)) {
 		t.Fatalf("skipped=%d have=%v", s.skipped, s.have)
 	}
 
@@ -84,9 +87,19 @@ func TestApplyDiffs(t *testing.T) {
 		t.Fatalf("steady state wrote: +%d -%d writes %d->%d", added, removed, w, f.writes)
 	}
 
-	// One ban lifted, one new, and time passes the /24's expiry.
+	if got := f.m[netip.MustParsePrefix("203.0.113.7/32")]; got != mono0+uint64(2*time.Minute) {
+		t.Fatalf("deadline = %d, want mono0+2m", got)
+	}
+
+	// One ban lifted, one new, and time passes the /24's expiry. The monotonic clock moves with the
+	// wall clock, so the surviving ban's deadline is not rewritten.
 	bans = []ban{{"203.0.113.7", later.Add(time.Minute)}, {"198.51.100.0/24", later}, {"192.0.2.9", later.Add(time.Hour)}}
+	s.mono = func() uint64 { return mono0 + uint64(time.Minute) }
+	w = f.writes
 	added, removed, err = s.apply(bans, later)
+	if f.writes != w+3 {
+		t.Fatalf("want 3 writes (2 unbans, 1 ban), got %d", f.writes-w)
+	}
 	if err != nil || added != 1 || removed != 2 {
 		t.Fatalf("second sync: +%d -%d %v", added, removed, err)
 	}
@@ -132,6 +145,55 @@ func TestExpireKeepsBansWhileGatewayDown(t *testing.T) {
 	}
 	if s.skipped != 1 {
 		t.Fatalf("expire must keep the last skipped count, got %d", s.skipped)
+	}
+}
+
+func TestDeadlines(t *testing.T) {
+	s, f := newSyncer()
+	now := time.Now()
+	host, net24 := netip.MustParsePrefix("198.51.100.7/32"), netip.MustParsePrefix("198.51.100.0/24")
+	bans := []ban{{"198.51.100.7", now.Add(time.Minute)}, {"198.51.100.0/24", now.Add(time.Hour)}}
+	s.apply(bans, now)
+	// The trie only returns the longest match, so the /32 must last as long as the /24 around it.
+	if f.m[host] != mono0+uint64(time.Hour) || f.m[net24] != mono0+uint64(time.Hour) {
+		t.Fatalf("covering deadline not applied: %v", f.m)
+	}
+	// Lifting the /24 brings the /32 back to its own expiry.
+	s.apply(bans[:1], now)
+	if f.m[host] != mono0+uint64(time.Minute) {
+		t.Fatalf("host deadline = %d, want mono0+1m", f.m[host])
+	}
+
+	// Jitter below the slack is ignored; a wall-clock step (here, a suspend the monotonic clock
+	// didn't count) rewrites the deadline on the next sync.
+	w := f.writes
+	s.mono = func() uint64 { return mono0 + uint64(slack/2) }
+	if s.apply(bans[:1], now); f.writes != w {
+		t.Fatal("rewrote a deadline within the slack")
+	}
+	later := now.Add(30 * time.Second)
+	s.apply(bans[:1], later) // 30s of wall time passed, mono0+slack/2 still
+	if want := mono0 + uint64(slack/2) + uint64(30*time.Second); f.m[host] != want {
+		t.Fatalf("after the step: %d, want %d", f.m[host], want)
+	}
+
+	// An expiry beyond what the clock can hold is a ban with no deadline, not an overflow.
+	s.apply([]ban{{"192.0.2.1", time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}}, now)
+	if d, ok := f.m[netip.MustParsePrefix("192.0.2.1/32")]; !ok || d != 0 {
+		t.Fatalf("far-future ban: %d %v", d, ok)
+	}
+}
+
+func TestExempt(t *testing.T) {
+	s, f := newSyncer()
+	s.exempt = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8::1/128")}
+	now := time.Now()
+	until := now.Add(time.Minute)
+	s.apply([]ban{{"10.1.2.3", until}, {"10.0.0.0/8", until}, {"2001:db8::1", until}, {"0.0.0.0/0", until}, {"2001:db8::/32", until}}, now)
+	// Bans inside an exempt range are skipped; wider ones are installed and the exempt entry,
+	// the longer match, carves the hole.
+	if got := f.keys(); !slices.Equal(got, []string{"0.0.0.0/0", "2001:db8::/32"}) || s.skipped != 3 {
+		t.Fatalf("map = %v skipped=%d", got, s.skipped)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 // Fastpath is the loaded program attached to one interface.
@@ -51,15 +52,94 @@ func Attach(iface string, generic bool, r Rate) (*Fastpath, error) {
 	return f, nil
 }
 
+// Open finds the program a running loader attached to iface and opens its maps, for read-only use.
+func Open(iface string) (*Fastpath, error) {
+	ifc, err := net.InterfaceByName(iface)
+	if err != nil {
+		return nil, err
+	}
+	it := new(link.Iterator)
+	defer it.Close()
+	for it.Next() {
+		info, err := it.Link.Info()
+		if err != nil || info.XDP() == nil || info.XDP().Ifindex != uint32(ifc.Index) {
+			continue
+		}
+		prog, err := ebpf.NewProgramFromID(info.Program)
+		if err != nil {
+			return nil, err
+		}
+		pi, err := prog.Info()
+		prog.Close()
+		if err != nil {
+			return nil, err
+		}
+		if pi.Name != fastpathProgFastpath {
+			continue
+		}
+		ids, _ := pi.MapIDs()
+		f := &Fastpath{}
+		for _, id := range ids {
+			m, err := ebpf.NewMapFromID(id)
+			if err != nil {
+				f.Close()
+				return nil, err
+			}
+			mi, err := m.Info()
+			switch {
+			case err == nil && mi.Name == fastpathMapBans:
+				f.objs.Bans = m
+			case err == nil && mi.Name == fastpathMapStats:
+				f.objs.Stats = m
+			default:
+				m.Close()
+			}
+		}
+		if f.objs.Bans == nil || f.objs.Stats == nil {
+			f.Close()
+			return nil, fmt.Errorf("program on %s has no bans or stats map", iface)
+		}
+		return f, nil
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("no limitplane-xdp program attached to %s", iface)
+}
+
 func (f *Fastpath) SetRate(r Rate) error { return f.objs.Config.Put(uint32(0), r) }
 
-func (f *Fastpath) Ban(p netip.Prefix) error { return f.objs.Bans.Put(KeyOf(p), uint8(1)) }
+// Ban drops p until the CLOCK_MONOTONIC deadline (nanoseconds, 0 = no deadline).
+func (f *Fastpath) Ban(p netip.Prefix, deadline uint64) error {
+	return f.objs.Bans.Put(KeyOf(p), deadline)
+}
+
+// Exempt makes the program always pass p, even inside a banned range, and skip its pps guard.
+func (f *Fastpath) Exempt(p netip.Prefix) error { return f.objs.Bans.Put(KeyOf(p), uint64(Exempt)) }
 
 func (f *Fastpath) Unban(p netip.Prefix) error {
 	if err := f.objs.Bans.Delete(KeyOf(p)); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return err
 	}
 	return nil
+}
+
+// ActiveBans counts the entries the program would drop on now: neither exempt nor lapsed.
+func (f *Fastpath) ActiveBans() (int, error) {
+	var (
+		k     Key
+		until uint64
+		n     int
+	)
+	now := Monotonic()
+	it := f.objs.Bans.Iterate()
+	for it.Next(&k, &until) {
+		if until == 0 || until > now { // Exempt (1) is always in the past
+
+			n++
+		}
+	}
+	return n, it.Err()
 }
 
 func (f *Fastpath) Counters() (Counters, error) {
@@ -76,7 +156,18 @@ func (f *Fastpath) Counters() (Counters, error) {
 	return c, nil
 }
 
-// Close detaches the program and frees its maps.
+// Close detaches the program (if this process attached it) and closes its maps.
 func (f *Fastpath) Close() error {
-	return errors.Join(f.link.Close(), f.objs.Close())
+	var err error
+	if f.link != nil {
+		err = f.link.Close()
+	}
+	return errors.Join(err, f.objs.Close())
+}
+
+// Monotonic reads CLOCK_MONOTONIC in nanoseconds, the clock bpf_ktime_get_ns uses.
+func Monotonic() uint64 {
+	var ts unix.Timespec
+	unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts) // cannot fail for this clock
+	return uint64(ts.Nano())
 }
