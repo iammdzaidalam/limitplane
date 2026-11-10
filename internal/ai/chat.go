@@ -17,7 +17,8 @@ type Question struct {
 type Answer struct {
 	Answer    string    `json:"answer"` // rule-based: the matching incidents and live state, cited
 	Hits      []Hit     `json:"hits"`
-	Facts     []Fact    `json:"facts"` // live facts, renumbered so they can be cited next to incidents
+	Facts     []Fact    `json:"facts"`  // live facts, renumbered so they can be cited next to incidents
+	Recent    bool      `json:"recent"` // nothing matched, so Hits are the latest incidents instead
 	Narrative Narrative `json:"narrative"`
 }
 
@@ -33,6 +34,12 @@ func (s *Service) Ask(ctx context.Context, q Question) Answer {
 		}
 	}
 	a := Answer{Hits: s.Memory.Search(q.Query)}
+	// Vague questions ("anything bad?", "hi") share no words with any incident: show the latest instead.
+	if len(a.Hits) == 0 {
+		recent := q.Query
+		recent.Text = ""
+		a.Hits, a.Recent = s.Memory.Search(recent), true
+	}
 	var b strings.Builder
 	f := facts{prefix: "F"}
 	for _, e := range q.Live {
@@ -55,16 +62,18 @@ func (s *Service) Ask(ctx context.Context, q Question) Answer {
 	a.Facts = f.list
 	switch n := len(a.Hits); {
 	case n == 0:
-		b.WriteString("No remembered incidents match that.")
+		b.WriteString("No incidents recorded yet.")
+	case a.Recent:
+		fmt.Fprintf(&b, "Nothing matched those words. The latest %s, newest first:", plural(n, "incident", fmt.Sprint(n, " incidents")))
 	default:
 		fmt.Fprintf(&b, "%d %s, best match first:", n, plural(n, "incident matches", "incidents match"))
-		for _, h := range a.Hits {
-			fmt.Fprintf(&b, "\n- %s %s: %s", h.Time.UTC().Format("Jan 2 15:04 UTC"), h.Kind, h.Text)
-			if h.Note != "" {
-				b.WriteString(" " + h.Note)
-			}
-			fmt.Fprintf(&b, " [%s]", h.Ref)
+	}
+	for _, h := range a.Hits {
+		fmt.Fprintf(&b, "\n- %s %s: %s", h.Time.UTC().Format("Jan 2 15:04 UTC"), h.Kind, h.Text)
+		if h.Note != "" {
+			b.WriteString(" " + h.Note)
 		}
+		fmt.Fprintf(&b, " [%s]", h.Ref)
 	}
 	a.Answer = b.String()
 	if len(a.Hits) == 0 && len(a.Facts) == 0 {

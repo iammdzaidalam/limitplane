@@ -184,7 +184,12 @@ func TestAsk(t *testing.T) {
 	if a.Narrative != (Narrative{}) {
 		t.Fatal("no model, no narrative")
 	}
-	if a := s.Ask(context.Background(), Question{Query: Query{Text: "zebras", Now: t0}}); a.Answer != "No remembered incidents match that." {
+	// No word matches: fall back to the latest incidents rather than a dead end.
+	if a := s.Ask(context.Background(), Question{Query: Query{Text: "zebras", Now: t0}}); !a.Recent || len(a.Hits) == 0 ||
+		!strings.HasPrefix(a.Answer, "Nothing matched those words. The latest") || !strings.Contains(a.Answer, "["+a.Hits[0].Ref+"]") {
+		t.Fatalf("%+v", a)
+	}
+	if a := (&Service{Memory: NewMemory(10)}).Ask(context.Background(), Question{Query: Query{Text: "hi", Now: t0}}); a.Answer != "No incidents recorded yet." {
 		t.Fatalf("%q", a.Answer)
 	}
 

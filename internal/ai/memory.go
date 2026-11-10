@@ -281,7 +281,10 @@ func tokens(s string) []string {
 	return out
 }
 
-var synonyms = map[string]string{"outage": "degrad", "down": "degrad", "fallback": "degrad", "cap": "quota", "reload": "policy"}
+var synonyms = map[string]string{
+	"outage": "degrad", "down": "degrad", "fallback": "degrad", "cap": "quota", "reload": "policy",
+	"attack": "storm", "flood": "storm", "spike": "storm", "hammer": "storm", "budget": "quota",
+}
 
 // stem folds the endings ops questions vary on: bans/banned/banning -> ban, blocks/blocked -> block.
 func stem(w string) string {
