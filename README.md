@@ -51,17 +51,18 @@ The dashboard then moves to `/_limitplane/` so it can't clash with your site's o
 ## Architecture
 
 ```
-                         ┌─────────────────────── your servers ───────────────────────┐
-                         │                                                            │
- clients ──▶ [ XDP ] ──▶ │   LimitPlane    LimitPlane    LimitPlane   (any number) ───┼──▶ your app
-             optional:   │        │              │             │                      │
-             drops banned│        └──────────────┼─────────────┘                      │
-             IPs and     │                       ▼                                    │
-             floods at   │      Redis or Redis Cluster: shared budgets and bans       │
-             the NIC     │                                                            │
-                         └────────────────────────────────────────────────────────────┘
-      each copy serves: dashboard · live feed · /metrics       Kubernetes: policy as resources
+                      ┌─────────────── your servers ────────────────┐
+clients ─▶ [ XDP ] ─▶ │  LimitPlane   LimitPlane   LimitPlane  ...  │ ─▶ your app
+           optional   │      │            │            │            │
+                      │      └────────────┼────────────┘            │
+                      │                   ▼                         │
+                      │   Redis or Redis Cluster: budgets and bans  │
+                      └─────────────────────────────────────────────┘
 ```
+
+- **XDP** (optional, Linux) drops banned IPs and packet floods at the network card.
+- **Each LimitPlane copy** serves the dashboard, a live event feed and `/metrics`.
+- **Kubernetes** (optional) can hold the policy and customers as resources that every copy watches.
 
 Every copy of LimitPlane is identical. Redis holds the shared counters, so it doesn't matter which
 copy a request lands on. There are three ways to put it in your traffic path:
