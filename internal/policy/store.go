@@ -3,6 +3,7 @@ package policy
 import (
 	"cmp"
 	"context"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -37,17 +38,38 @@ func (s *Store) Swap(c Config) error {
 	}
 	c = c.clone()
 	p := &compiled{cfg: c, keys: make(map[string]Match, len(c.Keys))}
+	lanes := make(map[string]*[numLanes]int64, len(c.Tiers))
+	for name, t := range c.Tiers {
+		lanes[name] = laneBursts(t)
+	}
 	for k, t := range c.Keys {
 		tier := c.Tiers[t.Tier]
-		p.keys[k] = Match{Tenant: t.ID, Tier: t.Tier, Rate: tier.Rate, Month: tier.Monthly}
+		p.keys[k] = Match{Tenant: t.ID, Tier: t.Tier, Rate: tier.Rate, Month: tier.Monthly, Lanes: lanes[t.Tier]}
 	}
 	at := c.Tiers[c.Anonymous]
-	p.anon = Match{Tenant: AnonTenant, Tier: c.Anonymous, Rate: at.Rate, Month: at.Monthly, Anon: true}
+	p.anon = Match{Tenant: AnonTenant, Tier: c.Anonymous, Rate: at.Rate, Month: at.Monthly, Anon: true, Lanes: lanes[c.Anonymous]}
 	// Linear scan over a few dozen sorted prefixes beats a trie on cache locality; no allocs either way.
 	p.routes = slices.Clone(c.Routes)
 	slices.SortFunc(p.routes, func(a, b Route) int { return cmp.Compare(len(b.Prefix), len(a.Prefix)) })
 	s.cur.Store(p)
 	return nil
+}
+
+// laneBursts precomputes the tier's burst in every lane (unlisted lanes keep it), so the request
+// path does an array read instead of float math. nil when the tier has no lanes.
+func laneBursts(t Tier) *[numLanes]int64 {
+	if len(t.Lanes) == 0 {
+		return nil
+	}
+	var b [numLanes]int64
+	for l := range b {
+		f, ok := t.Lanes[laneNames[l]]
+		if !ok {
+			f = 1
+		}
+		b[l] = max(1, int64(math.Round(float64(burst(t.Rate))*f)))
+	}
+	return &b
 }
 
 // Config returns a copy, so callers can't mutate the live maps.

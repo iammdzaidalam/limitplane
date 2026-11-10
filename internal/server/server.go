@@ -87,7 +87,7 @@ func New(c Config) *Server {
 			s.Hub.Quota(tenant, used, limit)
 			s.Pilot.Usage(tenant, used, limit)
 		},
-		TrustProxy: c.TrustProxy, FailClosed: c.FailClosed,
+		Lane: s.Pilot.Lane, TrustProxy: c.TrustProxy, FailClosed: c.FailClosed,
 	})
 	return s
 }
@@ -110,6 +110,22 @@ func (s *Server) Handler(upstream http.Handler) http.Handler {
 	mux.Handle(AdminPrefix, http.RedirectHandler(AdminPrefix+"/", http.StatusMovedPermanently))
 	mux.Handle("/", s.Gateway.Middleware(upstream))
 	return mux
+}
+
+// Authz serves the forward-auth endpoints for Envoy, nginx and Traefik, plus /healthz. It belongs on
+// its own listener that only the proxies can reach (--authz-addr). It believes the path and, with
+// TrustProxy, the client address the caller names, so a client calling it directly could price
+// its requests as it likes, or drain another IP's budget until autopilot bans that IP. The public
+// mux is open to clients; the admin mux wants a login no proxy can do.
+func (s *Server) Authz() http.Handler {
+	authz := s.Gateway.Authz()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			io.WriteString(w, "ok")
+			return
+		}
+		authz.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) admin() http.Handler {

@@ -10,11 +10,16 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
+	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
+
+// laneEvery is how often labels are republished for Lane.
+const laneEvery = time.Second
 
 type Config struct {
 	Rules
@@ -87,6 +92,10 @@ type Pilot struct {
 	lru     *list.List // of *track, front = most recently seen
 	clients map[string]*list.Element
 	alerted map[string]string // tenant -> month already alerted
+	laneAt  time.Time         // last publish
+	stale   bool              // a published label changed or left
+
+	lanes atomic.Pointer[map[string]policy.Lane] // clients past warming; read lock-free by Lane
 }
 
 func New(c Config) *Pilot {
@@ -134,12 +143,51 @@ func (p *Pilot) Observe(d gateway.Decision) {
 	p.mu.Lock()
 	t := p.track(d.Client)
 	t.observe(d)
+	if d.Time.Sub(p.laneAt) >= laneEvery {
+		p.publish(d.Time)
+	}
 	r := p.c.Rules
 	storm := r.StormBlocks > 0 && d.Reason == gateway.ReasonBurst && t.storm(d.Time, r.StormBlocks, r.StormWindow)
 	p.mu.Unlock()
 	if storm {
 		p.Ban(context.Background(), d.Client, r.BanFor, "storm") // best effort: the next storm retries
 	}
+}
+
+// Lane matches gateway.Config.Lane: the client's label as of the last publish (at most about a
+// second old), with one atomic load and a map read so the request path never takes mu.
+func (p *Pilot) Lane(client string) policy.Lane {
+	if m := p.lanes.Load(); m != nil {
+		return (*m)[client]
+	}
+	return policy.LaneWarming
+}
+
+// publish relabels the clients seen since the last publish and, if a label changed, swaps in a
+// new map for Lane. Idle clients keep their label (it depends only on what they sent), and the
+// LRU is in last-seen order, so the walk stops at the first idle one. Caller holds mu.
+func (p *Pilot) publish(now time.Time) {
+	for e := p.lru.Front(); e != nil; e = e.Next() {
+		t := e.Value.(*track)
+		if t.last.Before(p.laneAt) {
+			break
+		}
+		if l := t.label(); l != t.lane {
+			t.lane, p.stale = l, true
+		}
+	}
+	p.laneAt = now
+	if !p.stale {
+		return
+	}
+	m := map[string]policy.Lane{}
+	for e := p.lru.Front(); e != nil; e = e.Next() {
+		if t := e.Value.(*track); t.lane != policy.LaneWarming {
+			m[t.client] = t.lane
+		}
+	}
+	p.lanes.Store(&m)
+	p.stale = false
 }
 
 // Usage matches gateway.Config.OnQuota.
@@ -166,6 +214,7 @@ func (p *Pilot) track(client string) *track {
 	if p.lru.Len() >= p.c.MaxClients {
 		old := p.lru.Remove(p.lru.Back()).(*track)
 		delete(p.clients, old.client)
+		p.stale = p.stale || old.lane != policy.LaneWarming
 	}
 	t := &track{client: client}
 	p.clients[client] = p.lru.PushFront(t)
@@ -178,6 +227,8 @@ type Client struct {
 	RPS        float64   `json:"rps"`
 	BlockRatio float64   `json:"blockRatio"`
 	LastSeen   time.Time `json:"lastSeen"`
+	Lane       string    `json:"lane,omitempty"`  // label that set the burst of its last request; empty: its tier has no lanes
+	Burst      int64     `json:"burst,omitempty"` // the burst that request got
 }
 
 // Clients lists fingerprints, busiest first.

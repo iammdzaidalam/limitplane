@@ -38,6 +38,7 @@ func main() {
 func run() error {
 	port := env("PORT", "8080")
 	addr := flag.String("addr", ":"+port, "listen address")
+	authzAddr := flag.String("authz-addr", os.Getenv("LIMITPLANE_AUTHZ_ADDR"), "forward-auth listener for Envoy, nginx and Traefik, e.g. :9091 (empty: off); reachable only by the proxies")
 	upstream := flag.String("upstream", "", "proxy to this URL (empty: demo app)")
 	cfgPath := flag.String("config", "", "policy JSON file (empty: built-in demo policy)")
 	redisURL := flag.String("redis", os.Getenv("REDIS_URL"), "shared Redis, e.g. redis://:pass@host:6379, or a Cluster: redis+cluster://:pass@h1:6379,h2:6379")
@@ -129,7 +130,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
+	var as *http.Server
+	if *authzAddr != "" {
+		aln, err := net.Listen("tcp", *authzAddr)
+		if err != nil {
+			return err
+		}
+		as = &http.Server{Handler: srv.Authz(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
+		go func() { errc <- as.Serve(aln) }()
+		log.Printf("forward auth on %s", *authzAddr)
+		if !*trust {
+			log.Print("warning: forward auth without --trust-proxy limits every anonymous client as the proxy's IP")
+		}
+	}
 	go func() { errc <- hs.Serve(ln) }()
 	mode := "demo"
 	if up != nil {
@@ -146,6 +160,9 @@ func run() error {
 	stopHub() // ends SSE streams so Shutdown isn't held open by them
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if as != nil {
+		as.Shutdown(sctx)
+	}
 	if err := hs.Shutdown(sctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

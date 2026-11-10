@@ -1,4 +1,4 @@
-// Package gateway is the HTTP middleware that meters every request.
+// Package gateway meters every request: inline as middleware, or as a forward-auth check for a proxy.
 package gateway
 
 import "time"
@@ -26,4 +26,5 @@ type Decision struct {
 	Remaining  int64         `json:"remaining"`
 	RetryAfter time.Duration `json:"retryAfter"`
 	Degraded   bool          `json:"degraded,omitempty"` // shared backend down, local fallback used
+	Lane       string        `json:"lane,omitempty"`     // autopilot label that set the burst; empty when the tier has no lanes
 }

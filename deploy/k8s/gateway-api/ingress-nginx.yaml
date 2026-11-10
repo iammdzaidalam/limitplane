@@ -1,11 +1,39 @@
-# ingress-nginx -> LimitPlane -> your app.
-# ingress-nginx sets X-Forwarded-For to the client address; run LimitPlane with --trust-proxy
-# (the chart default) so it limits per client instead of per ingress pod.
+# ingress-nginx -> your app, with LimitPlane deciding every request (auth_request).
+# Needs authz.yaml (or helm authz.enabled). ingress-nginx's auth subrequest already carries
+# X-Original-URI, X-Original-Method and X-Forwarded-For, which is all /authz/nginx reads.
+#
+# auth_request passes on only 401 and 403, so LimitPlane answers a block with 403. Without the
+# snippet the client gets a bare 403; with it, a 429 with Retry-After, the RateLimit headers and a
+# JSON body. Snippets need allow-snippet-annotations: "true" and annotations-risk-level: Critical
+# in the controller ConfigMap.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: limitplane
-  namespace: limitplane
+  name: my-app
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: http://limitplane-authz.limitplane.svc.cluster.local:9091/authz/nginx
+    # Copied onto the request to your app, replacing anything the client sent.
+    nginx.ingress.kubernetes.io/auth-response-headers: X-Limitplane-Tenant,X-Limitplane-Tier,RateLimit-Limit,RateLimit-Remaining,RateLimit-Reset
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      auth_request_set $lp_limit $upstream_http_ratelimit_limit;
+      auth_request_set $lp_remaining $upstream_http_ratelimit_remaining;
+      auth_request_set $lp_reset $upstream_http_ratelimit_reset;
+      auth_request_set $lp_retry $upstream_http_retry_after;
+      auth_request_set $lp_reason $upstream_http_x_limitplane_reason;
+      add_header RateLimit-Limit $lp_limit always;
+      add_header RateLimit-Remaining $lp_remaining always;
+      add_header RateLimit-Reset $lp_reset always;
+      error_page 403 = @limitplane_blocked;
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location @limitplane_blocked {
+        add_header RateLimit-Limit $lp_limit always;
+        add_header RateLimit-Remaining $lp_remaining always;
+        add_header RateLimit-Reset $lp_reset always;
+        add_header Retry-After $lp_retry always;
+        default_type application/json;
+        return 429 '{"error":"rate_limited","reason":"$lp_reason","retryAfter":$lp_retry}\n';
+      }
 spec:
   ingressClassName: nginx
   rules:
@@ -16,5 +44,5 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: limitplane
+                name: my-app
                 port: {number: 80}

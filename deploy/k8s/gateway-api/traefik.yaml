@@ -1,15 +1,33 @@
-# Traefik -> LimitPlane -> your app.
-# Assumes Traefik v3 with its CRDs, and LimitPlane runs in the limitplane namespace with
-# --upstream pointing at your app.
+# Traefik -> your app, with LimitPlane deciding every request (ForwardAuth).
+# Needs authz.yaml (or helm authz.enabled) and Traefik v3 with its CRDs. Traefik sends the original
+# request as X-Forwarded-Method / X-Forwarded-Uri and the client as X-Forwarded-For.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: limitplane
+  namespace: default
+spec:
+  forwardAuth:
+    address: http://limitplane-authz.limitplane.svc.cluster.local:9091/authz/traefik
+    # Copied onto the request to your app, replacing anything the client sent. Traefik has no
+    # option to add them to the client's response on an allow; a denial (429, Retry-After,
+    # RateLimit-*, JSON body) reaches the client whole.
+    authResponseHeaders: [X-Limitplane-Tenant, X-Limitplane-Tier, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset]
+    # true only if the entryPoint's forwardedHeaders.trustedIPs covers your load balancer;
+    # otherwise X-Forwarded-For is just the peer Traefik sees.
+    trustForwardHeader: false
+---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
-  name: limitplane
-  namespace: limitplane
+  name: my-app
+  namespace: default
 spec:
   entryPoints: [web]
   routes:
     - kind: Rule
       match: Host(`api.example.com`)
+      middlewares:
+        - name: limitplane
       services:
-        - {name: limitplane, port: 80}
+        - {name: my-app, port: 80}

@@ -15,3 +15,28 @@ spec:
       ports:
         - {port: 6379}
 {{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.authz.enabled }}
+---
+# Anyone may reach the public port; only the proxies' namespaces may reach forward auth.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "limitplane.fullname" . }}-authz
+  labels: {{- include "limitplane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "limitplane.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {port: http}
+    - from:
+        {{- range .Values.authz.allowFrom }}
+        - namespaceSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+        {{- else }}
+        - podSelector: {}
+        {{- end }}
+      ports:
+        - {port: authz}
+{{- end }}

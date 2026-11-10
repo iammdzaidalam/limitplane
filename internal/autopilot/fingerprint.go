@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
+	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
 const (
@@ -39,6 +40,10 @@ type track struct {
 
 	blocks []time.Time // storm ring of burst-block times
 	bi, bn int
+
+	lane   policy.Lane // label as last published for Lane
+	shaped string      // lane and burst of the last ok/burst decision
+	burst  int64
 }
 
 func (t *track) observe(d gateway.Decision) {
@@ -70,6 +75,12 @@ func (t *track) observe(d gateway.Decision) {
 	// Bans aren't a fresh 429 the client could have honoured; only burst/monthly count.
 	if d.Reason == gateway.ReasonBurst || d.Reason == gateway.ReasonMonthly {
 		t.lastBlock, t.lastRetry = now, d.RetryAfter
+	}
+	if d.Reason == gateway.ReasonOK || d.Reason == gateway.ReasonBurst { // Limit is the burst only then
+		t.shaped, t.burst = d.Lane, 0
+		if d.Lane != "" {
+			t.burst = d.Limit
+		}
 	}
 	t.paths[t.pi%pathRing] = maphash.String(seed, d.Path)
 	t.pi++
@@ -137,12 +148,12 @@ outer:
 //   - crawler: mostly distinct paths at a steady-ish pace
 //   - bot: metronomic timing (low inter-arrival variation) or mostly blocked
 //   - human: bursty think-time timing on a few paths
-func (t *track) label() string {
+func (t *track) label() policy.Lane {
 	if t.n < minSamples {
-		return "warming"
+		return policy.LaneWarming
 	}
 	if t.followups >= 3 && t.respected*5 < t.followups {
-		return "retry_bug"
+		return policy.LaneRetryBug
 	}
 	cv := 0.0
 	if t.gapMean > 0 {
@@ -150,13 +161,13 @@ func (t *track) label() string {
 	}
 	switch {
 	case t.diversity() >= 0.6 && cv < 1:
-		return "crawler"
+		return policy.LaneCrawler
 	case cv < 0.3 || t.blockEWMA > 0.5:
-		return "bot"
+		return policy.LaneBot
 	}
-	return "human"
+	return policy.LaneHuman
 }
 
 func (t *track) snapshot(now time.Time) Client {
-	return Client{Client: t.client, Label: t.label(), RPS: t.rps(now), BlockRatio: t.blockEWMA, LastSeen: t.last}
+	return Client{Client: t.client, Label: t.label().String(), RPS: t.rps(now), BlockRatio: t.blockEWMA, LastSeen: t.last, Lane: t.shaped, Burst: t.burst}
 }

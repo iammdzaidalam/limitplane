@@ -61,6 +61,7 @@ Useful values (see `values.yaml` for all of them):
 | `policy` | one `free` tier | The policy file, same shape as `limitplane.example.json`. Hot-reloaded. |
 | `existingSecret` | `""` | Use your own Secret with `admin-key`, `metrics-key`, `redis-url`. For Redis Cluster set `redis-url` to `redis+cluster://h1:6379,h2:6379` (see [REDIS.md](REDIS.md)). |
 | `redis.enabled` | `true` | Bundled single-node Redis. Set `redisUrl` to use your own. |
+| `authz.enabled` | `false` | Forward-auth port and its `<release>-authz` Service for Envoy, ingress-nginx, Traefik. `authz.allowFrom` lists the namespaces the NetworkPolicy lets in. |
 | `operator.enabled` | `false` | Read policy and tenants from `RateLimitPolicy`/`Tenant` CRs (see [OPERATOR.md](OPERATOR.md)). |
 | `serviceMonitor.enabled` | `false` | Scrape `/metrics` with the metrics key. |
 | `prometheusRule.enabled` | `false` | Alerts: high block rate, Redis fallback active, fail-closed errors, tenant past 80% of its quota, tenant out of quota. |
@@ -70,15 +71,24 @@ them on upgrade. Policy changes roll out without a restart; key changes restart 
 
 ## Behind an ingress or gateway
 
-`deploy/k8s/gateway-api` has minimal routes that send traffic to the `limitplane` Service:
+Two ways to put LimitPlane behind a proxy:
 
-- `envoy-gateway.yaml`: Gateway API `Gateway` + `HTTPRoute` for Envoy Gateway
-- `traefik.yaml`: Traefik `IngressRoute`
-- `ingress-nginx.yaml`: plain `Ingress` for ingress-nginx
+- **Inline:** the proxy routes to the `limitplane` Service and LimitPlane forwards to `--upstream`.
+  Keep `--trust-proxy` on (the chart default) so LimitPlane limits by the client address in
+  `X-Forwarded-For` instead of by the ingress pod. Only do that when every request reaches
+  LimitPlane through that proxy, otherwise clients can spoof the header.
+- **Forward auth:** the proxy asks LimitPlane about each request and sends it straight to your app.
+  Run with `--authz-addr :9091` (Helm: `--set authz.enabled=true` plus `authz.allowFrom` set to the
+  proxy's namespace). `deploy/k8s/gateway-api` has one example per proxy:
+  - `envoy-gateway.yaml`: `SecurityPolicy` with `extAuth.http` on `/authz/envoy`
+  - `ingress-nginx.yaml`: `auth-url` on `/authz/nginx`, plus the snippet that turns its 403 into a 429
+  - `traefik.yaml`: `ForwardAuth` middleware on `/authz/traefik`
+  - `authz.yaml`: the `limitplane-authz` Service and the NetworkPolicy, for the Kustomize base
 
-Keep `--trust-proxy` on (the chart default) so LimitPlane limits by the client address in
-`X-Forwarded-For` instead of by the ingress pod. Only do that when every request reaches LimitPlane
-through that proxy, otherwise clients can spoof the header.
+  The forward-auth port must be reachable only by the proxy: it believes the path and client IP the
+  caller names. [AUTHZ.md](AUTHZ.md) covers the headers each proxy needs, why the port is separate
+  and what fails how. `make prove-authz` runs all three proxies in Docker.
 
-The dashboard and admin API are under `/_limitplane/` on the same host. They need the admin key,
-but you can also block that path at the ingress and use a port-forward instead.
+The dashboard and admin API are under `/_limitplane/` on the same host in inline mode (at `/` on the
+main port otherwise). They need the admin key, but you can also block that path at the ingress and
+use a port-forward instead.

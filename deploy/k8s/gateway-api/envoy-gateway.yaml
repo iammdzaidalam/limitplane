@@ -1,11 +1,11 @@
-# Envoy Gateway -> LimitPlane -> your app.
-# Assumes Envoy Gateway is installed with a GatewayClass named "eg", and LimitPlane runs in the
-# limitplane namespace with --upstream pointing at your app (helm: --set upstream=http://my-app.default.svc).
+# Envoy Gateway -> your app, with LimitPlane deciding every request (ext_authz over HTTP).
+# Needs authz.yaml (or helm authz.enabled) and Envoy Gateway with a GatewayClass named "eg"; the
+# Envoy pods run in envoy-gateway-system, which is what the NetworkPolicy lets in.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: public
-  namespace: limitplane
+  namespace: default
 spec:
   gatewayClassName: eg
   listeners:
@@ -14,12 +14,49 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: limitplane
-  namespace: limitplane
+  name: my-app
+  namespace: default
 spec:
   parentRefs:
     - name: public
   hostnames: [api.example.com]
   rules:
     - backendRefs:
-        - {name: limitplane, port: 80}
+        - {name: my-app, port: 80}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: limitplane
+  namespace: default
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: my-app}
+  extAuth:
+    # LimitPlane unreachable: let traffic through, as LimitPlane does itself when Redis is down.
+    # Set false if you run it with --fail-closed.
+    failOpen: true
+    # Envoy sends only Host, Method, Path, Content-Length and Authorization unless told otherwise.
+    headersToExtAuth: [x-api-key, x-forwarded-for]
+    http:
+      backendRefs:
+        - {name: limitplane-authz, namespace: limitplane, port: 9091}
+      # Envoy calls <path><original path>: /authz/envoy/v1/generate.
+      path: /authz/envoy
+      # Copied onto the request to your app, replacing anything the client sent.
+      headersToBackend: [x-limitplane-tenant, x-limitplane-tier, ratelimit-limit, ratelimit-remaining, ratelimit-reset]
+# A denial reaches the client as LimitPlane wrote it: 429, Retry-After, RateLimit-*, JSON body.
+# On an allow the RateLimit headers go to your app only; showing them to the client needs
+# allowed_client_headers_on_success, which SecurityPolicy doesn't expose (use an EnvoyPatchPolicy).
+---
+# The policy lives with the route; let it reference the Service in the limitplane namespace.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: limitplane-authz
+  namespace: limitplane
+spec:
+  from:
+    - {group: gateway.envoyproxy.io, kind: SecurityPolicy, namespace: default}
+  to:
+    - {group: "", kind: Service, name: limitplane-authz}

@@ -9,6 +9,9 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/iammdzaidalam/limitplane/internal/limiter"
 )
 
 // AnonTenant is the tenant name reported for requests without a known key.
@@ -68,13 +71,31 @@ func (c Config) Validate() error {
 			bad("tier %q: period must be > 0", name)
 		case t.Rate.Interval() <= 0:
 			bad("tier %q: limit too high for period", name)
+		case t.Rate.Burst < 0:
+			bad("tier %q: burst must be >= 0", name)
 		}
 		// A burst below a route's cost means that route can never pass.
-		if t.Rate.Burst < maxCost {
-			bad("tier %q: burst %d < max route cost %d", name, t.Rate.Burst, maxCost)
+		b := burst(t.Rate)
+		if b < maxCost {
+			bad("tier %q: burst %d < max route cost %d", name, b, maxCost)
+		}
+		// GCRA keeps burst x interval in an int64 of nanoseconds, and a lane may raise the burst.
+		f := 1.0
+		for _, x := range t.Lanes {
+			f = max(f, x)
+		}
+		if t.Rate.Limit > 0 && float64(b)*f*float64(t.Rate.Interval()) > float64(maxSpan) {
+			bad("tier %q: burst x interval over 100 years", name)
 		}
 		if t.Monthly < 0 || (t.Monthly > 0 && t.Monthly < maxCost) {
 			bad("tier %q: monthly must be 0 (no cap) or >= max route cost %d", name, maxCost)
+		}
+		for _, l := range slices.Sorted(maps.Keys(t.Lanes)) {
+			if _, ok := LaneOf(l); !ok {
+				bad("tier %q: unknown lane %q (want one of %s)", name, l, strings.Join(laneNames[:], ", "))
+			} else if f := t.Lanes[l]; !(f >= MinLaneFactor && f <= MaxLaneFactor) {
+				bad("tier %q: lane %q factor %g outside %g..%g", name, l, f, MinLaneFactor, MaxLaneFactor)
+			}
 		}
 	}
 	if c.Anonymous == "" {
@@ -94,8 +115,25 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
+// maxSpan bounds how far ahead a burst may book; int64 nanoseconds end at about 292 years.
+const maxSpan = 100 * 365 * 24 * time.Hour
+
+// burst is the effective bucket size: limiter.Rate treats 0 as Limit.
+func burst(r limiter.Rate) int64 {
+	if r.Burst > 0 {
+		return r.Burst
+	}
+	return r.Limit
+}
+
 func (c Config) clone() Config {
 	c.Tiers = maps.Clone(c.Tiers)
+	for k, t := range c.Tiers {
+		if t.Lanes != nil {
+			t.Lanes = maps.Clone(t.Lanes)
+			c.Tiers[k] = t
+		}
+	}
 	c.Routes = slices.Clone(c.Routes)
 	c.Keys = maps.Clone(c.Keys)
 	return c

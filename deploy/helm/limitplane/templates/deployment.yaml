@@ -52,6 +52,9 @@ spec:
             {{- if .Values.failClosed }}
             - --fail-closed
             {{- end }}
+            {{- if .Values.authz.enabled }}
+            - --authz-addr=:{{ .Values.authz.port }}
+            {{- end }}
             {{- if .Values.operator.enabled }}
             - --kube
             - --kube-policy={{ .Values.operator.policyName }}
@@ -61,6 +64,9 @@ spec:
             {{- end }}
           ports:
             - {name: http, containerPort: 8080}
+            {{- if .Values.authz.enabled }}
+            - {name: authz, containerPort: {{ .Values.authz.port }}}
+            {{- end }}
           env:
             - name: LIMITPLANE_ADMIN_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: admin-key}}

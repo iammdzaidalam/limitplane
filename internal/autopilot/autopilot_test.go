@@ -12,6 +12,7 @@ import (
 
 	"github.com/iammdzaidalam/limitplane/internal/gateway"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
+	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
 
 var ctx = context.Background()
@@ -29,17 +30,17 @@ func TestBanGoesToStore(t *testing.T) {
 	var got []Ban
 	store := limiter.NewBanList()
 	p := New(Config{Store: store, OnBan: func(b Ban) { got = append(got, b) }})
-	p.Ban(ctx, "a", time.Hour, "manual")
-	p.Ban(ctx, "b", time.Millisecond, "manual")
-	if _, ok := store.Banned("a", time.Now()); !ok || len(got) != 2 {
+	p.Ban(ctx, "192.0.2.1", time.Hour, "manual")
+	p.Ban(ctx, "192.0.2.2", time.Millisecond, "manual")
+	if _, ok := store.Banned("192.0.2.1", time.Now()); !ok || len(got) != 2 {
 		t.Fatalf("ban a missing from store, OnBan calls %d", len(got))
 	}
 	time.Sleep(5 * time.Millisecond)
-	if bs, _ := p.Bans(ctx); len(bs) != 1 || bs[0].Client != "a" {
+	if bs, _ := p.Bans(ctx); len(bs) != 1 || bs[0].Client != "192.0.2.1" {
 		t.Fatalf("Bans() = %+v", bs)
 	}
-	p.Unban(ctx, "a")
-	if banned(p, "a") {
+	p.Unban(ctx, "192.0.2.1")
+	if banned(p, "192.0.2.1") {
 		t.Fatal("unban failed")
 	}
 }
@@ -68,16 +69,16 @@ func TestSetRules(t *testing.T) {
 	p := New(Config{Rules: DefaultRules})
 	now := time.Now()
 	for i := range 3 {
-		p.Observe(dec("c", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*time.Millisecond)))
+		p.Observe(dec("192.0.2.3", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*time.Millisecond)))
 	}
-	if banned(p, "c") {
+	if banned(p, "192.0.2.3") {
 		t.Fatal("3 blocks banned under the default 20")
 	}
 	p.SetRules(Rules{StormBlocks: 3, StormWindow: time.Second, BanFor: time.Minute})
 	for i := range 3 { // a new block count restarts the client's window
-		p.Observe(dec("c", "/", gateway.ReasonBurst, now.Add(time.Duration(3+i)*time.Millisecond)))
+		p.Observe(dec("192.0.2.3", "/", gateway.ReasonBurst, now.Add(time.Duration(3+i)*time.Millisecond)))
 	}
-	if !banned(p, "c") || p.Rules().StormBlocks != 3 {
+	if !banned(p, "192.0.2.3") || p.Rules().StormBlocks != 3 {
 		t.Fatal("new rules not applied")
 	}
 }
@@ -88,23 +89,23 @@ func TestStorm(t *testing.T) {
 	now := time.Now()
 	// 3 blocks spread over 3s: never 3 inside one second.
 	for i := range 3 {
-		p.Observe(dec("slow", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*1500*time.Millisecond)))
+		p.Observe(dec("192.0.2.4", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*1500*time.Millisecond)))
 	}
 	// Allowed traffic and other clients don't count.
 	for range 5 {
-		p.Observe(dec("fast", "/", gateway.ReasonOK, now))
-		p.Observe(dec("other", "/", gateway.ReasonBurst, now))
+		p.Observe(dec("192.0.2.5", "/", gateway.ReasonOK, now))
+		p.Observe(dec("192.0.2.6", "/", gateway.ReasonBurst, now))
 	}
-	if len(bans) != 1 || bans[0].Client != "other" {
+	if len(bans) != 1 || bans[0].Client != "192.0.2.6" {
 		t.Fatalf("bans %+v", bans)
 	}
 	for i := range 3 {
-		p.Observe(dec("fast", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*100*time.Millisecond)))
+		p.Observe(dec("192.0.2.5", "/", gateway.ReasonBurst, now.Add(time.Duration(i)*100*time.Millisecond)))
 	}
-	if !banned(p, "fast") || len(bans) != 2 || bans[1].Reason != "storm" {
+	if !banned(p, "192.0.2.5") || len(bans) != 2 || bans[1].Reason != "storm" {
 		t.Fatalf("storm not banned: %+v", bans)
 	}
-	if banned(p, "slow") {
+	if banned(p, "192.0.2.4") {
 		t.Fatal("slow client banned")
 	}
 }
@@ -212,6 +213,53 @@ func TestLRUEviction(t *testing.T) {
 	}
 }
 
+// Labels reach Lane within about a second of decision time, and leave it with the client.
+func TestLanePublished(t *testing.T) {
+	p := New(Config{MaxClients: 2})
+	at := time.Now()
+	p.Observe(dec("other", "/", gateway.ReasonOK, at))
+	for i := range 20 { // re-fires 10ms after each 429
+		reason := gateway.ReasonOK
+		if i%2 == 0 {
+			reason = gateway.ReasonBurst
+		}
+		at = at.Add(10 * time.Millisecond)
+		p.Observe(dec("retry", "/", reason, at))
+	}
+	if l := p.Lane("retry"); l != policy.LaneWarming {
+		t.Fatalf("published before the second was up: %s", l)
+	}
+	at = at.Add(time.Second)
+	p.Observe(dec("other", "/", gateway.ReasonOK, at))
+	if l := p.Lane("retry"); l != policy.LaneRetryBug || p.Lane("nobody") != policy.LaneWarming {
+		t.Fatalf("lane %s", l)
+	}
+	p.Observe(dec("third", "/", gateway.ReasonOK, at.Add(time.Millisecond))) // evicts retry
+	p.Observe(dec("third", "/", gateway.ReasonOK, at.Add(2*time.Second)))
+	if l := p.Lane("retry"); l != policy.LaneWarming {
+		t.Fatalf("evicted client kept lane %s", l)
+	}
+}
+
+// Clients shows the lane and burst the gateway applied to a client's last ok/burst decision.
+func TestClientShowsLane(t *testing.T) {
+	p := New(Config{})
+	now := time.Now()
+	lane := func() (string, int64) { c := p.Clients()[0]; return c.Lane, c.Burst }
+	d := dec("c", "/", gateway.ReasonOK, now)
+	d.Lane, d.Limit = "human", 20
+	p.Observe(d)
+	d.Reason, d.Allowed, d.Limit = gateway.ReasonMonthly, false, 1000 // Limit is the quota here
+	p.Observe(d)
+	if l, b := lane(); l != "human" || b != 20 {
+		t.Fatalf("lane %q burst %d", l, b)
+	}
+	p.Observe(dec("c", "/", gateway.ReasonOK, now)) // lanes switched off
+	if l, b := lane(); l != "" || b != 0 {
+		t.Fatalf("lane %q burst %d after lanes went off", l, b)
+	}
+}
+
 func TestConcurrent(t *testing.T) {
 	p := New(Config{Rules: Rules{StormBlocks: 5, StormWindow: time.Second, BanFor: time.Second}, MaxClients: 50})
 	var wg sync.WaitGroup
@@ -242,4 +290,25 @@ func BenchmarkObserve(b *testing.B) {
 	for b.Loop() {
 		p.Observe(d)
 	}
+}
+
+func BenchmarkLane(b *testing.B) {
+	p := New(Config{})
+	now := time.Now().Add(-time.Hour)
+	for i := range 10000 {
+		c := fmt.Sprint("198.51.", i/256, ".", i%256)
+		for j := range minSamples {
+			p.Observe(dec(c, "/", gateway.ReasonOK, now.Add(time.Duration(j)*time.Second)))
+		}
+	}
+	p.Observe(dec("x", "/", gateway.ReasonOK, time.Now()))
+	if p.Lane("198.51.3.7") == policy.LaneWarming {
+		b.Fatal("not published")
+	}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			p.Lane("198.51.3.7")
+		}
+	})
 }

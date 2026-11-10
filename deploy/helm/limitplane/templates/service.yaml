@@ -10,3 +10,18 @@ spec:
   selector: {{- include "limitplane.selectorLabels" . | nindent 4 }}
   ports:
     - {name: http, port: {{ .Values.service.port }}, targetPort: http}
+{{- if .Values.authz.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "limitplane.fullname" . }}-authz
+  labels:
+    {{- include "limitplane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: authz
+spec:
+  type: ClusterIP
+  selector: {{- include "limitplane.selectorLabels" . | nindent 4 }}
+  ports:
+    - {name: authz, port: {{ .Values.authz.port }}, targetPort: authz}
+{{- end }}

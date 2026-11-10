@@ -58,6 +58,10 @@ spec:
                           period: {type: string, pattern: '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$', description: 'Go duration, e.g. 1s or 1m'}
                           burst: {type: integer, format: int64, minimum: 0, description: 'Bucket size; 0 means limit.'}
                       monthly: {type: integer, format: int64, minimum: 0, description: 'Monthly cost units; 0 means no cap.'}
+                      lanes:
+                        type: object
+                        description: 'Burst factor per autopilot label (warming, human, bot, crawler, retry_bug); the sustained rate never changes.'
+                        additionalProperties: {type: number, minimum: 0.1, maximum: 4}
                 routes:
                   type: array
                   description: Longest prefix wins; unmatched paths cost 1.

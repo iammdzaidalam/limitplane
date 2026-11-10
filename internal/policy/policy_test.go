@@ -34,14 +34,20 @@ func TestExampleConfigParses(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
-		"unknown field":  `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":1}}},"anonymous":"free","oops":1}`,
-		"no anonymous":   `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":1}}}}`,
-		"zero limit":     `{"tiers":{"free":{"rate":{"limit":0,"period":"1s","burst":1}}},"anonymous":"free"}`,
-		"zero period":    `{"tiers":{"free":{"rate":{"limit":1,"period":"0s","burst":1}}},"anonymous":"free"}`,
-		"burst < cost":   `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"routes":[{"prefix":"/a","cost":5}],"anonymous":"free"}`,
-		"cost 0":         `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"routes":[{"prefix":"/a","cost":0}],"anonymous":"free"}`,
-		"unknown tier":   `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"keys":{"k":{"id":"x","tier":"gold"}},"anonymous":"free"}`,
-		"monthly < cost": `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"monthly":3}},"routes":[{"prefix":"/a","cost":5}],"anonymous":"free"}`,
+		"unknown field":   `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":1}}},"anonymous":"free","oops":1}`,
+		"no anonymous":    `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":1}}}}`,
+		"zero limit":      `{"tiers":{"free":{"rate":{"limit":0,"period":"1s","burst":1}}},"anonymous":"free"}`,
+		"zero period":     `{"tiers":{"free":{"rate":{"limit":1,"period":"0s","burst":1}}},"anonymous":"free"}`,
+		"burst < cost":    `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"routes":[{"prefix":"/a","cost":5}],"anonymous":"free"}`,
+		"cost 0":          `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"routes":[{"prefix":"/a","cost":0}],"anonymous":"free"}`,
+		"unknown tier":    `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":2}}},"keys":{"k":{"id":"x","tier":"gold"}},"anonymous":"free"}`,
+		"monthly < cost":  `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"monthly":3}},"routes":[{"prefix":"/a","cost":5}],"anonymous":"free"}`,
+		"unknown lane":    `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"lanes":{"robot":2}}},"anonymous":"free"}`,
+		"lane too big":    `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"lanes":{"human":4.01}}},"anonymous":"free"}`,
+		"lane too small":  `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"lanes":{"retry_bug":0.09}}},"anonymous":"free"}`,
+		"lane zero":       `{"tiers":{"free":{"rate":{"limit":1,"period":"1s","burst":9},"lanes":{"bot":0}}},"anonymous":"free"}`,
+		"burst overflows": `{"tiers":{"free":{"rate":{"limit":1,"period":"1h","burst":900000}}},"anonymous":"free"}`,
+		"lane overflows":  `{"tiers":{"free":{"rate":{"limit":1,"period":"1h","burst":800000},"lanes":{"human":2}}},"anonymous":"free"}`,
 	}
 	for name, js := range cases {
 		if _, err := Parse([]byte(js)); err == nil {
@@ -75,6 +81,45 @@ func TestResolve(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(100, func() { s.Resolve("k1", "/v1/generate") }); n != 0 {
 		t.Errorf("Resolve allocs = %v", n)
+	}
+}
+
+func TestLaneBursts(t *testing.T) {
+	c := cfg()
+	pro := c.Tiers["pro"] // burst 100
+	pro.Lanes = map[string]float64{"human": MaxLaneFactor, "retry_bug": MinLaneFactor, "crawler": 0.333}
+	c.Tiers["pro"] = pro
+	s := NewStore(c)
+	m := s.Resolve("k1", "/")
+	if m.Lanes == nil || *m.Lanes != [numLanes]int64{LaneWarming: 100, LaneHuman: 400, LaneBot: 100, LaneCrawler: 33, LaneRetryBug: 10} {
+		t.Fatalf("bursts %v", m.Lanes)
+	}
+	if s.Resolve("", "/").Lanes != nil {
+		t.Fatal("a tier without lanes must leave them off")
+	}
+	if b := NewStore(Config{Tiers: map[string]Tier{"t": {Rate: limiter.Rate{Limit: 8, Period: time.Second}, Lanes: map[string]float64{"human": 2}}},
+		Anonymous: "t"}).Resolve("", "/").Lanes[LaneHuman]; b != 16 {
+		t.Fatalf("omitted burst means limit: human lane got %d, want 16", b)
+	}
+	tiny := cfg()
+	tiny.Routes = nil
+	free := tiny.Tiers["free"]
+	free.Rate.Burst, free.Lanes = 1, map[string]float64{"bot": MinLaneFactor}
+	tiny.Tiers["free"] = free
+	if b := NewStore(tiny).Resolve("", "/").Lanes[LaneBot]; b != 1 {
+		t.Fatalf("burst rounded to %d, want at least 1", b)
+	}
+	s.Config().Tiers["pro"].Lanes["human"] = 0.5 // callers get a copy
+	if s.Config().Tiers["pro"].Lanes["human"] != MaxLaneFactor {
+		t.Fatal("Config shares the lanes map")
+	}
+	for i, n := range laneNames {
+		if l, ok := LaneOf(n); !ok || l != Lane(i) || l.String() != n {
+			t.Errorf("lane %q round trip", n)
+		}
+	}
+	if Lane(numLanes).String() != "unknown" {
+		t.Error("out-of-range lane")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,10 @@ type Config struct {
 	// OnDecision runs synchronously on the request path: it must not block (hand off to a channel or counter).
 	OnDecision func(Decision)
 	// OnQuota reports a named tenant's monthly usage after each check; same rule as OnDecision.
-	OnQuota    func(tenant string, used, limit int64)
+	OnQuota func(tenant string, used, limit int64)
+	// Lane returns a client's autopilot label for tiers with lanes; nil turns lanes off.
+	// It runs on the request path: one lock-free read.
+	Lane       func(client string) policy.Lane
 	TrustProxy bool
 	FailClosed bool // backend error -> 503 instead of allowing
 }
@@ -41,76 +45,97 @@ func DecisionFrom(ctx context.Context) (Decision, bool) {
 	return d, ok
 }
 
-// Middleware meters each request with one Meter.Check: ban -> monthly -> burst, and nothing is
-// spent unless all three pass. So a burst reject never bills the plan and a monthly reject never
-// uses up burst. Monthly is checked before burst because it is the stickier answer: a tenant out
-// of quota is told to wait for the 1st, not to retry in two seconds.
+// Middleware meters each request with Check and lets it through only when allowed.
 func (g *Gateway) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		now := time.Now()
-		ip := ClientIP(r, g.c.TrustProxy)
-		d := Decision{Time: now, Client: ip, Method: r.Method, Path: r.URL.Path}
-
-		m := g.c.Policy.Resolve(r.Header.Get(KeyHeader), d.Path)
-		d.Tenant, d.Tier, d.Cost = m.Tenant, m.Tier, m.Cost
-		key := m.Tenant
-		if m.Anon {
-			key = "anon:" + ip
+		d, reset := g.Check(r, r.Method, r.URL.Path)
+		writeHeaders(w.Header(), d, reset)
+		if !d.Allowed {
+			deny(w, d, status(d))
+			return
 		}
-
-		res, err := g.c.Meter.Check(r.Context(), limiter.Request{Client: ip, Key: key, Rate: m.Rate, Cost: m.Cost, Month: m.Month})
-		if err != nil {
-			if g.c.FailClosed {
-				d.Reason = ReasonError
-				g.finish(w, r, next, d, 0)
-				return
-			}
-			res = limiter.Result{Allowed: true, Limit: m.Rate.Burst, Remaining: m.Rate.Burst, Degraded: true}
-		}
-		d.Limit, d.Remaining, d.RetryAfter, d.Degraded = res.Limit, res.Remaining, res.RetryAfter, res.Degraded
-		if err == nil && m.Month > 0 && !m.Anon && res.Reason != limiter.Banned && g.c.OnQuota != nil {
-			g.c.OnQuota(m.Tenant, res.Used, m.Month)
-		}
-		switch res.Reason {
-		case limiter.Banned:
-			d.Reason = ReasonBanned
-			g.finish(w, r, next, d, d.RetryAfter)
-		case limiter.Monthly:
-			d.Reason, d.Limit, d.Remaining = ReasonMonthly, m.Month, max(0, m.Month-res.Used)
-			d.RetryAfter = nextMonth(now).Sub(now)
-			g.finish(w, r, next, d, d.RetryAfter)
-		case limiter.Burst:
-			d.Reason = ReasonBurst
-			g.finish(w, r, next, d, res.ResetAfter)
-		default:
-			d.Allowed, d.Reason = true, ReasonOK
-			g.finish(w, r, next, d, res.ResetAfter)
-		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, d)))
 	})
 }
 
-func (g *Gateway) finish(w http.ResponseWriter, r *http.Request, next http.Handler, d Decision, reset time.Duration) {
-	h := w.Header()
-	if d.Reason != ReasonError {
-		// Canonical keys and one shared backing array: Header.Set would allocate per call.
-		v := [3]string{strconv.FormatInt(d.Limit, 10), strconv.FormatInt(d.Remaining, 10), strconv.FormatInt(ceilSec(reset), 10)}
-		vs := v[:]
-		h["Ratelimit-Limit"], h["X-Ratelimit-Limit"] = vs[0:1:1], vs[0:1:1]
-		h["Ratelimit-Remaining"], h["X-Ratelimit-Remaining"] = vs[1:2:2], vs[1:2:2]
-		h["Ratelimit-Reset"], h["X-Ratelimit-Reset"] = vs[2:3:3], vs[2:3:3]
+// Check decides one request for method and path, with one Meter.Check: ban -> monthly -> burst,
+// and nothing is spent unless all three pass. So a burst reject never bills the plan and a monthly
+// reject never uses up burst. Monthly is checked before burst because it is the stickier answer: a
+// tenant out of quota is told to wait for the 1st, not to retry in two seconds.
+// It reports the decision to OnDecision and returns it with the time until the burst refills.
+func (g *Gateway) Check(r *http.Request, method, path string) (Decision, time.Duration) {
+	now := time.Now()
+	ip := ClientIP(r, g.c.TrustProxy)
+	d := Decision{Time: now, Client: ip, Method: method, Path: clean(path)}
+
+	m := g.c.Policy.Resolve(r.Header.Get(KeyHeader), d.Path)
+	d.Tenant, d.Tier, d.Cost = m.Tenant, m.Tier, m.Cost
+	key := m.Tenant
+	if m.Anon {
+		key = "anon:" + ip
+	}
+	// Lanes reshape the burst only, never below one request: sustained rate and quota stay the plan's.
+	if m.Lanes != nil && g.c.Lane != nil {
+		l := g.c.Lane(ip)
+		m.Rate.Burst, d.Lane = max(m.Lanes[l], m.Cost), l.String()
+	}
+
+	res, err := g.c.Meter.Check(r.Context(), limiter.Request{Client: ip, Key: key, Rate: m.Rate, Cost: m.Cost, Month: m.Month})
+	failed := err != nil
+	if failed && !g.c.FailClosed {
+		res = limiter.Result{Allowed: true, Limit: m.Rate.Burst, Remaining: m.Rate.Burst, Degraded: true}
+	}
+	if !failed && m.Month > 0 && !m.Anon && res.Reason != limiter.Banned && g.c.OnQuota != nil {
+		g.c.OnQuota(m.Tenant, res.Used, m.Month)
+	}
+	d.Limit, d.Remaining, d.RetryAfter, d.Degraded = res.Limit, res.Remaining, res.RetryAfter, res.Degraded
+	reset := res.ResetAfter
+	switch {
+	case failed && g.c.FailClosed:
+		d.Reason = ReasonError
+	case res.Reason == limiter.Banned:
+		d.Reason, reset = ReasonBanned, d.RetryAfter
+	case res.Reason == limiter.Monthly:
+		d.Reason, d.Limit, d.Remaining = ReasonMonthly, m.Month, max(0, m.Month-res.Used)
+		d.RetryAfter = nextMonth(now).Sub(now)
+		reset = d.RetryAfter
+	case res.Reason == limiter.Burst:
+		d.Reason = ReasonBurst
+	default:
+		d.Allowed, d.Reason = true, ReasonOK
 	}
 	if g.c.OnDecision != nil {
 		g.c.OnDecision(d)
 	}
-	if d.Allowed {
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, d)))
+	return d, reset
+}
+
+// writeHeaders sets the RateLimit headers (none when there is no answer to give).
+func writeHeaders(h http.Header, d Decision, reset time.Duration) {
+	if d.Reason == ReasonError {
 		return
 	}
+	// Canonical keys and one shared backing array: Header.Set would allocate per call.
+	v := [3]string{strconv.FormatInt(d.Limit, 10), strconv.FormatInt(d.Remaining, 10), strconv.FormatInt(ceilSec(reset), 10)}
+	vs := v[:]
+	h["Ratelimit-Limit"], h["X-Ratelimit-Limit"] = vs[0:1:1], vs[0:1:1]
+	h["Ratelimit-Remaining"], h["X-Ratelimit-Remaining"] = vs[1:2:2], vs[1:2:2]
+	h["Ratelimit-Reset"], h["X-Ratelimit-Reset"] = vs[2:3:3], vs[2:3:3]
+}
 
-	code, retry := http.StatusTooManyRequests, max(1, ceilSec(d.RetryAfter))
+// status is the code for a denied decision: 503 when there was no answer, else 429.
+func status(d Decision) int {
 	if d.Reason == ReasonError {
-		code = http.StatusServiceUnavailable
-	} else {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusTooManyRequests
+}
+
+// deny writes Retry-After (unless the backend failed) and the JSON body that says why.
+func deny(w http.ResponseWriter, d Decision, code int) {
+	h := w.Header()
+	retry := max(1, ceilSec(d.RetryAfter))
+	if d.Reason != ReasonError {
 		h.Set("Retry-After", strconv.FormatInt(retry, 10))
 	}
 	body, _ := json.Marshal(struct {
@@ -141,6 +166,19 @@ func message(d Decision, retry int64) string {
 		return fmt.Sprintf("This client is temporarily blocked for abusive traffic. Retry in %ds.", retry)
 	}
 	return "Rate limiting is unavailable, so the request was rejected. Try again shortly."
+}
+
+// clean resolves dot segments and repeated slashes, so /v1/ping/../generate is priced as
+// /v1/generate, the way the app behind will most likely route it. Already-clean paths cost nothing.
+func clean(p string) string {
+	if !strings.Contains(p, "/.") && !strings.Contains(p, "//") {
+		return p
+	}
+	c := path.Clean(p)
+	if strings.HasSuffix(p, "/") && c != "/" {
+		c += "/"
+	}
+	return c
 }
 
 func ceilSec(d time.Duration) int64 { return int64((d + time.Second - 1) / time.Second) }

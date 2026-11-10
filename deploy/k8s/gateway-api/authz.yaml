@@ -1,0 +1,39 @@
+# Forward-auth port for the examples in this directory. The proxy asks LimitPlane about each request
+# and sends it straight to your app; LimitPlane never carries the traffic.
+#
+# Helm does all of this: --set authz.enabled=true --set 'authz.allowFrom[0].kubernetes\.io/metadata\.name=<proxy namespace>'
+# With deploy/k8s/base, add to the limitplane container
+#   args:  --authz-addr=:9091   (keep --trust-proxy)
+#   ports: {name: authz, containerPort: 9091}
+# then apply this file. The port believes whatever path and client IP the caller names, so keep it
+# off the public Service and let only the proxy's namespace reach it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: limitplane-authz
+  namespace: limitplane
+spec:
+  selector: {app: limitplane}
+  ports:
+    - {name: authz, port: 9091, targetPort: authz}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: limitplane-authz
+  namespace: limitplane
+spec:
+  podSelector:
+    matchLabels: {app: limitplane}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {port: http} # dashboard, API, metrics: as before
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [envoy-gateway-system, ingress-nginx, traefik] # keep the one you run
+      ports:
+        - {port: authz}

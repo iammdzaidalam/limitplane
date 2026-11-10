@@ -88,6 +88,14 @@
         "port": {"type": "integer", "minimum": 1, "maximum": 65535}
       }
     },
+    "authz": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "allowFrom": {"type": "array", "items": {"type": "object"}}
+      }
+    },
     "resources": {"type": "object"},
     "autoscaling": {
       "type": "object",

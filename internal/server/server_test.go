@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iammdzaidalam/limitplane/internal/autopilot"
+	"github.com/iammdzaidalam/limitplane/internal/gateway"
 	"github.com/iammdzaidalam/limitplane/internal/limiter"
 	"github.com/iammdzaidalam/limitplane/internal/policy"
 )
@@ -288,5 +289,53 @@ func TestMetricsKey(t *testing.T) {
 		if r := do(t, "GET", ts.URL+"/metrics", tok, ""); r.StatusCode != want {
 			t.Errorf("token %q: got %d, want %d", tok, r.StatusCode, want)
 		}
+	}
+}
+
+// Forward-auth decisions go through the same hub as inline ones: audit, stats, autopilot bans.
+func TestAuthzListener(t *testing.T) {
+	s, ts := newTestServer(t)
+	az := httptest.NewServer(s.Authz())
+	defer az.Close()
+	tok := login(t, ts.URL)
+	check := func(uri string) *http.Response {
+		req, _ := http.NewRequest("GET", az.URL+"/authz/nginx", nil)
+		req.Header.Set("X-Api-Key", "free-key")
+		req.Header.Set("X-Original-URI", uri)
+		req.Header.Set("X-Original-Method", "POST")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res
+	}
+	if r := check("/v1/generate?x=1"); r.StatusCode != 200 || r.Header.Get("RateLimit-Remaining") != "0" || r.Header.Get("X-Limitplane-Tenant") != "acme" {
+		t.Fatalf("allow: %d %v", r.StatusCode, r.Header)
+	}
+	if r := check("/v1/ping"); r.StatusCode != 403 || r.Header.Get("Retry-After") == "" || r.Header.Get("X-Limitplane-Reason") != "burst" {
+		t.Fatalf("block: %d %v", r.StatusCode, r.Header)
+	}
+	if r := do(t, "GET", az.URL+"/healthz", "", ""); r.StatusCode != 200 {
+		t.Fatalf("healthz %d", r.StatusCode)
+	}
+	if r := do(t, "GET", az.URL+"/api/stats", tok, ""); r.StatusCode != 404 {
+		t.Fatalf("admin API on the authz listener: %d", r.StatusCode)
+	}
+
+	var audit []gateway.Decision
+	for deadline := time.Now().Add(2 * time.Second); len(audit) < 2 && time.Now().Before(deadline); {
+		audit = nil
+		json.NewDecoder(do(t, "GET", ts.URL+"/api/audit", tok, "").Body).Decode(&audit)
+	}
+	if len(audit) != 2 || audit[1].Path != "/v1/generate" || audit[1].Method != "POST" || audit[1].Cost != 5 || audit[0].Reason != "burst" {
+		t.Fatalf("audit %+v", audit)
+	}
+
+	if r := do(t, "POST", ts.URL+"/api/bans", tok, `{"client":"127.0.0.1","minutes":5}`); r.StatusCode != 204 {
+		t.Fatalf("ban: %d", r.StatusCode)
+	}
+	if r := check("/"); r.StatusCode != 403 || r.Header.Get("X-Limitplane-Reason") != "banned" {
+		t.Fatalf("banned: %d %v", r.StatusCode, r.Header)
 	}
 }

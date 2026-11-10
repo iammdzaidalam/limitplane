@@ -308,7 +308,8 @@ function renderTiers() {
   const cfg = policyCfg
   const rows = Object.entries(cfg.tiers).map(([name, t]) => h('div', { className: 'r' },
     col('lbl ell', name),
-    h('div', {}, col('mono', `${t.rate.limit}/${t.rate.period === '1s' ? 's' : t.rate.period} · burst ${t.rate.burst}`), col('sub2', t.monthly ? fmt(t.monthly) + ' per month' : 'No monthly cap'))))
+    h('div', {}, col('mono', `${t.rate.limit}/${t.rate.period === '1s' ? 's' : t.rate.period} · burst ${t.rate.burst}`), col('sub2', (t.monthly ? fmt(t.monthly) + ' per month' : 'No monthly cap') +
+      (t.lanes ? ' · burst ' + Object.entries(t.lanes).map(([l, f]) => `${l} ×${f}`).join(', ') : '')))))
   list($('#tiers'), null, rows, 'No tiers.')
   const n = Object.keys(cfg.keys).length
   $('#tierNote').textContent = `${n} API ${n === 1 ? 'key' : 'keys'}. Requests without a known key are limited per client IP on the ${cfg.anonymous} tier.`
@@ -333,7 +334,8 @@ function renderClients() {
     return h('article', { className: 'ccard' },
       h('div', { className: 'ctop' }, col('cid', c.client),
         h('button', { className: 'arrow', type: 'button', title: 'Show decisions from ' + c.client, 'aria-label': 'Show decisions from ' + c.client, onclick: () => viewClient(c.client) }, arrowIcon())),
-      h('p', { className: 'sub2' }, `${rps}/s · `, col(pct >= 50 ? 'badtxt' : '', pct + '% blocked'), h('br'), 'seen ' + ago(c.lastSeen)),
+      h('p', { className: 'sub2' }, `${rps}/s · `, col(pct >= 50 ? 'badtxt' : '', pct + '% blocked'), h('br'), 'seen ' + ago(c.lastSeen),
+        ...(c.lane ? [h('br'), h('span', { title: `Its tier has lanes: as a ${c.lane} it gets a burst of ${fmt(c.burst)}. Rate and monthly quota are unchanged.` }, `lane ${c.lane} · burst ${fmt(c.burst)}`)] : [])),
       h('div', { className: 'cfoot' }, col('pill ' + (labelCls[c.label] ?? ''), c.label || 'unknown'),
         isBanned(c.client) ? col('pill warn', 'banned') : h('button', { className: 'btn small', type: 'button', 'aria-label': 'Ban ' + c.client + ' for 10 minutes', onclick: () => ban(c.client, 10, 'manual') }, 'Ban')))
   })
@@ -585,6 +587,7 @@ function openDrawer(d, from) {
   $('#dList').replaceChildren(
     row('Time', `${clock(d._ms)}.${ms}`), row('Tenant', d.tenant || '—'), row('Tier', d.tier || '—'), row('Client', d.client),
     row('Cost', fmt(d.cost), d.cost === 1 ? 'token' : 'tokens'),
+    row('Lane', d.lane || '—', d.lane ? 'set this burst' : 'tier has no lanes'),
     row(d.reason === 'monthly' ? 'Monthly limit' : 'Limit', d.limit ? fmt(d.limit) : '—'),
     row('Remaining', d.limit ? fmt(d.remaining) : '—', d.limit ? `${Math.round(100 * d.remaining / d.limit)}% of limit` : null),
     row('Retry after', dur(d.retryAfter)),

@@ -49,6 +49,16 @@ service:
   type: ClusterIP
   port: 80
 
+# Forward auth: Envoy (ext_authz), ingress-nginx (auth-url) or Traefik (ForwardAuth) ask LimitPlane
+# about each request and send it straight to the app (see deploy/k8s/gateway-api). It gets its own
+# port and ClusterIP Service, <release>-authz, never the public one: the proxy names the path and
+# the client IP, so whoever can reach this port can spend any budget. With networkPolicy.enabled,
+# only pods in the allowFrom namespaces may (empty: this namespace only).
+authz:
+  enabled: false
+  port: 9091
+  allowFrom: [] # namespace labels, e.g. [{kubernetes.io/metadata.name: envoy-gateway-system}]
+
 resources:
   requests: {cpu: 100m, memory: 64Mi}
   limits: {cpu: 500m, memory: 128Mi}
