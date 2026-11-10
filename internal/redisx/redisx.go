@@ -28,9 +28,15 @@ const (
 	poolSize = 16
 	// used when the caller's ctx has no deadline, so a blackholed Redis can't hang a request
 	defaultTimeout = 2 * time.Second
+	// pooled conns idle longer are closed, not reused: servers and load balancers drop idle conns
+	maxIdle = 30 * time.Second
 )
 
 var errClosed = errors.New("redisx: client closed")
+
+// errDead is a conn that failed before any reply byte, other than by timing out: it was already
+// closed under us, so the command never ran and can be resent on a new conn.
+var errDead = errors.New("redisx: connection closed")
 
 // Client talks to one Redis, or to a Cluster when the URL scheme is redis+cluster.
 type Client struct {
@@ -51,9 +57,10 @@ type node struct {
 }
 
 type conn struct {
-	nc net.Conn
-	r  *bufio.Reader
-	w  *bufio.Writer
+	nc   net.Conn
+	r    *bufio.Reader
+	w    *bufio.Writer
+	idle time.Time // when it was pooled
 }
 
 // Dial is New plus a check that the server (or one Cluster node) is there.
@@ -197,6 +204,7 @@ func (n *node) put(cn *conn) {
 		cn.nc.Close()
 		return
 	}
+	cn.idle = time.Now()
 	select {
 	case n.idle <- cn:
 	default:
@@ -206,28 +214,46 @@ func (n *node) put(cn *conn) {
 
 var askingCmd = []any{"ASKING"}
 
+// get takes a pooled conn (pooled = true) or dials one.
+func (n *node) get(ctx context.Context) (cn *conn, pooled bool, err error) {
+	for {
+		select {
+		case cn = <-n.idle:
+			if time.Since(cn.idle) < maxIdle {
+				return cn, true, nil
+			}
+			cn.nc.Close()
+		default:
+			cn, err = n.dial(ctx)
+			return cn, false, err
+		}
+	}
+}
+
 // do runs one command on a pooled conn; asking sends ASKING first (a Cluster ASK redirect).
+// A pooled conn found dead is replaced once: only the first command sent on it can have hit that.
 func (n *node) do(ctx context.Context, args []any, asking bool) (any, error) {
-	var cn *conn
-	select {
-	case cn = <-n.idle:
-	default:
-		var err error
+	cn, pooled, err := n.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	first := args
+	if asking {
+		first = askingCmd
+	}
+	v, err := cn.do(ctx, first)
+	if pooled && errors.Is(err, errDead) {
+		cn.nc.Close()
 		if cn, err = n.dial(ctx); err != nil {
 			return nil, err
 		}
+		v, err = cn.do(ctx, first)
 	}
-	var v any
-	var err error
-	if asking {
-		_, err = cn.do(ctx, askingCmd)
-	}
-	if err == nil {
+	if asking && err == nil {
 		v, err = cn.do(ctx, args)
 	}
 	var rerr Error
 	if err != nil && !errors.As(err, &rerr) {
-		// shortcut: no retry on a stale pooled conn; fine while Redis has no idle timeout.
 		cn.nc.Close()
 		return nil, err
 	}
@@ -297,9 +323,31 @@ func (cn *conn) do(ctx context.Context, args []any) (any, error) {
 
 func (cn *conn) roundTrip(args []any) (any, error) {
 	if err := cn.write(args); err != nil {
-		return nil, err
+		return nil, dead(err)
+	}
+	if _, err := cn.r.Peek(1); err != nil {
+		return nil, dead(err)
 	}
 	return readReply(cn.r)
+}
+
+// dead marks err as errDead unless it is a timeout (a slow server, or the caller giving up).
+func dead(err error) error {
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errDead, err)
+}
+
+// CallerGaveUp reports whether err is ctx's doing: it was cancelled, or a timeout hit at its
+// deadline. The socket deadline can fire a hair before ctx.Err() is set, so this goes by err too.
+// Such a failure says nothing about the server.
+func CallerGaveUp(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	_, ok := ctx.Deadline() // without one, any timeout is our own default
+	return ok && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded))
 }
 
 func (cn *conn) write(args []any) error {

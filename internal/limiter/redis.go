@@ -79,7 +79,7 @@ if tat < now then tat = now end
 local nxt = tat + cost * interval
 local allow_at = nxt - dvt
 if allow_at > now then
-  return {2, math.floor((dvt - (tat - now)) / interval), allow_at - now, tat - now, used}
+  return {2, math.max(math.floor((dvt - (tat - now)) / interval), 0), allow_at - now, tat - now, used}
 end
 local ttl = nxt - now
 redis.call('SET', KEYS[1], string.format('%d', nxt), 'PX', math.ceil(ttl / 1000))

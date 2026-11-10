@@ -320,6 +320,25 @@ func TestRedisIntegration(t *testing.T) {
 	})
 }
 
+// meterLua agrees with gcra at the edges: a tier lowered mid-burst never reports a negative
+// Remaining, and a burst window past int64 nanoseconds still admits.
+func TestRedisIntegrationGCRAEdges(t *testing.T) {
+	forEachRedis(t, func(t *testing.T, addr string) {
+		l := NewRedis(dialRedis(t, addr), nil)
+		key := uniq("edge-")
+		for range 100 {
+			mustAllow(t, l, key, Rate{Limit: 100, Period: time.Second, Burst: 100}, 1)
+		}
+		if res := mustAllow(t, l, key, Rate{Limit: 10, Period: time.Second, Burst: 5}, 1); res.Allowed || res.Remaining != 0 {
+			t.Fatalf("after a tier downgrade: %+v", res)
+		}
+		r := Rate{Limit: 1, Period: 24 * time.Hour, Burst: 1_000_000}
+		if res := mustAllow(t, l, uniq("long-"), r, 1); !res.Allowed || res.Remaining != r.Burst-1 {
+			t.Fatalf("long burst window: %+v", res)
+		}
+	})
+}
+
 func TestRedisIntegrationSpendsOnlyWhenAllPass(t *testing.T) {
 	forEachRedis(t, func(t *testing.T, addr string) {
 		c := dialRedis(t, addr)

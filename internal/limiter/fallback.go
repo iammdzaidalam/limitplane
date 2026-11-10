@@ -21,7 +21,7 @@ func (b *breaker) trip()        { b.openUntil.Store(time.Now().Add(cooldown).Uni
 // One Cluster node failing sends just this request there: redisx already skips that node, and
 // tenants on the other nodes stay shared.
 func (b *breaker) failover(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil || errors.Is(err, ErrInvalid) || errors.Is(err, ErrBadBan) {
+	if err == nil || redisx.CallerGaveUp(ctx, err) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrBadBan) {
 		return false
 	}
 	if !errors.Is(err, redisx.ErrNodeDown) {

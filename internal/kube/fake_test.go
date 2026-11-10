@@ -24,6 +24,8 @@ type fakeAPI struct {
 	history   map[string][]watchEvent   // collection path -> every change, for resuming watches
 	watchers  map[chan watchEvent]string
 	reqs      []string // "token METHOD path?query"
+	// before, if set, runs ahead of every request (unlocked); a non-zero code fails it with that status.
+	before func(r *http.Request) int
 }
 
 type obj = map[string]any
@@ -164,6 +166,19 @@ func (f *fakeAPI) expire(coll, name string) {
 	f.compacted = f.rv
 }
 
+func (f *fakeAPI) intercept(h func(r *http.Request) int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.before = h
+}
+
+// remove deletes an object, as kubectl delete would.
+func (f *fakeAPI) remove(coll, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.put(coll, "DELETED", f.objs[coll][name])
+}
+
 // requests returns the recorded requests that contain every one of the substrings.
 func (f *fakeAPI) requests(subs ...string) []string {
 	f.mu.Lock()
@@ -182,6 +197,16 @@ func (f *fakeAPI) requests(subs ...string) []string {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	before := f.before
+	f.mu.Unlock()
+	if before != nil {
+		if code := before(r); code != 0 {
+			w.WriteHeader(code)
+			json.NewEncoder(w).Encode(obj{"kind": "Status", "code": code, "message": http.StatusText(code)})
+			return
+		}
+	}
 	coll, name, sub := split(r.URL.Path)
 	q := r.URL.Query()
 	f.mu.Lock()

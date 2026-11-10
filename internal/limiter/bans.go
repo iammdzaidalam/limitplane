@@ -3,6 +3,7 @@ package limiter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/netip"
 	"slices"
@@ -17,8 +18,11 @@ type Ban struct {
 	Reason string    `json:"reason"`
 }
 
-// ErrBadBan is a ban on an IPv4-mapped prefix shorter than /96, which would span non-IPv4 space.
-var ErrBadBan = errors.New("limiter: an IPv4-mapped prefix must be /96 or longer")
+// ErrBadBan is a ban client that is neither an IP nor a CIDR prefix. Requests are banned by
+// client IP, so anything else would be stored and never match.
+var ErrBadBan = errors.New("limiter: a ban must be an IP or a CIDR prefix")
+
+var errMappedBan = fmt.Errorf("%w (an IPv4-mapped prefix must be /96 or longer)", ErrBadBan)
 
 // canonical spells an IP or CIDR one way, so "10.0.0.7/30" and "10.0.0.4/30" are the same ban.
 // A single-address prefix becomes a plain IP, which is matched exactly, and an IPv4-mapped prefix
@@ -30,7 +34,7 @@ func canonical(client string) (string, error) {
 	if p, err := netip.ParsePrefix(client); err == nil {
 		if a := p.Addr(); a.Is4In6() {
 			if p.Bits() < 96 {
-				return "", ErrBadBan
+				return "", errMappedBan
 			}
 			p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
 		}
@@ -39,7 +43,7 @@ func canonical(client string) (string, error) {
 		}
 		return p.String(), nil
 	}
-	return client, nil
+	return "", ErrBadBan
 }
 
 // BanList is an in-process BanStore. Reads load an immutable snapshot with no lock, so the
@@ -57,6 +61,7 @@ type BanList struct {
 
 type banSnap struct {
 	byClient map[string]Ban             // every ban, by canonical client
+	ips      map[string]time.Time       // IP bans: the latest of their own and covering CIDRs' expiry
 	nets     map[netip.Prefix]time.Time // CIDR bans
 	bits     []int                      // distinct prefix lengths in nets
 }
@@ -69,7 +74,7 @@ func NewBanList() *BanList {
 
 // newSnap indexes the unexpired bans.
 func newSnap(bans map[string]Ban, now time.Time) *banSnap {
-	s := &banSnap{byClient: map[string]Ban{}, nets: map[netip.Prefix]time.Time{}}
+	s := &banSnap{byClient: map[string]Ban{}, ips: map[string]time.Time{}, nets: map[netip.Prefix]time.Time{}}
 	for c, b := range bans {
 		if !now.Before(b.Until) {
 			continue
@@ -82,35 +87,43 @@ func newSnap(bans map[string]Ban, now time.Time) *banSnap {
 			}
 		}
 	}
+	for c, b := range s.byClient {
+		if a, err := netip.ParseAddr(c); err == nil {
+			s.ips[c] = later(b.Until, s.netUntil(a))
+		}
+	}
 	return s
 }
 
-// Banned matches client exactly (O(1)), then against each CIDR length in use: one map lookup per
-// distinct length, not per ban.
+// Banned reports the latest expiry of every ban covering client. An IP ban already holds that, so
+// a hit is one map lookup; otherwise it is one lookup per distinct CIDR length in use, not per ban.
 func (l *BanList) Banned(client string, now time.Time) (time.Time, bool) {
 	s := l.snap.Load()
-	if b, ok := s.byClient[client]; ok && now.Before(b.Until) {
-		return b.Until, true
-	}
-	return s.inNet(client, now)
-}
-
-func (s *banSnap) inNet(client string, now time.Time) (time.Time, bool) {
-	if len(s.bits) == 0 {
-		return time.Time{}, false
-	}
-	a, err := netip.ParseAddr(client)
-	if err != nil {
-		return time.Time{}, false
-	}
-	a = a.Unmap()
-	for _, bits := range s.bits {
-		p, err := a.Prefix(bits) // errors when bits is too long for a's family
-		if until, ok := s.nets[p]; err == nil && ok && now.Before(until) {
-			return until, true
+	until, ok := s.ips[client]
+	if !ok && len(s.bits) > 0 {
+		if a, err := netip.ParseAddr(client); err == nil {
+			until = s.netUntil(a.Unmap())
 		}
 	}
-	return time.Time{}, false
+	return until, now.Before(until)
+}
+
+// netUntil is the latest expiry of the CIDR bans containing a, or zero.
+func (s *banSnap) netUntil(a netip.Addr) (until time.Time) {
+	for _, bits := range s.bits {
+		p, err := a.Prefix(bits) // errors when bits is too long for a's family
+		if u, ok := s.nets[p]; err == nil && ok && u.After(until) {
+			until = u
+		}
+	}
+	return until
+}
+
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func (l *BanList) Ban(_ context.Context, b Ban) error {

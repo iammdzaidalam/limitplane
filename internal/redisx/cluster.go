@@ -137,7 +137,7 @@ func (n *node) call(ctx context.Context, args []any, asking bool) (any, error) {
 	}
 	v, err := n.do(ctx, args, asking)
 	var rerr Error
-	if err != nil && !errors.As(err, &rerr) && ctx.Err() == nil {
+	if err != nil && !errors.As(err, &rerr) && !CallerGaveUp(ctx, err) {
 		n.downUntil.Store(time.Now().Add(nodeCooldown).UnixNano())
 		n.c.cluster.refreshSoon() // it may have failed over to a replica
 		return nil, fmt.Errorf("%w: %s: %w", ErrNodeDown, n.addr, err)

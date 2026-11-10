@@ -228,3 +228,129 @@ func TestAutopilotRules(t *testing.T) {
 	default:
 	}
 }
+
+// A Tenant that arrives before its policy waits as PolicyNotFound, then goes live with it.
+func TestTenantBeforePolicy(t *testing.T) {
+	f, srv := newFake(t)
+	f.seed(tenantsPath, tenantObj("acme", "pro"))
+	f.seed(secretsPath, secretObj("acme-key", "k-acme"))
+	var leader atomic.Bool
+	leader.Store(true)
+	k, store := startController(t, clientFor(srv, "a"), "a", &leader)
+	<-k.Ready()
+	waitFor(t, "PolicyNotFound", func() bool {
+		c, _ := condition(f.get(tenantsPath, "acme"))
+		return c == "False/PolicyNotFound"
+	})
+	if store.Resolve("k-acme", "/").Tenant == "acme" || store.Config().Anonymous != "free" {
+		t.Fatal("no policy yet: the startup policy must stay")
+	}
+	f.seed(policiesPath, policyObj("default", 3))
+	waitFor(t, "tenant live", func() bool { return store.Resolve("k-acme", "/").Tier == "pro" })
+	waitFor(t, "tenant ready", func() bool {
+		c, _ := condition(f.get(tenantsPath, "acme"))
+		return c == "True/Active"
+	})
+
+	// Deleting the policy keeps serving the last one; Tenants say why they can't be checked.
+	f.remove(policiesPath, "default")
+	waitFor(t, "PolicyNotFound again", func() bool {
+		c, _ := condition(f.get(tenantsPath, "acme"))
+		return c == "False/PolicyNotFound"
+	})
+	if store.Resolve("k-acme", "/").Tier != "pro" {
+		t.Fatal("deleting the CR dropped the live policy")
+	}
+}
+
+// Rotating a Secret revokes the old key; deleting a Tenant revokes its key.
+func TestKeyRotationAndRevocation(t *testing.T) {
+	f, srv := newFake(t)
+	f.seed(policiesPath, policyObj("default", 3))
+	f.seed(tenantsPath, tenantObj("acme", "pro"))
+	f.seed(secretsPath, secretObj("acme-key", "k-old"))
+	var leader atomic.Bool
+	_, store := startController(t, clientFor(srv, "a"), "a", &leader) // a follower serves keys too
+	waitFor(t, "old key live", func() bool { return store.Resolve("k-old", "/").Tenant == "acme" })
+
+	f.seed(secretsPath, secretObj("acme-key", "k-new"))
+	waitFor(t, "new key live", func() bool { return store.Resolve("k-new", "/").Tenant == "acme" })
+	if store.Resolve("k-old", "/").Tenant == "acme" {
+		t.Fatal("old key still accepted after rotation")
+	}
+
+	f.remove(tenantsPath, "acme")
+	waitFor(t, "tenant revoked", func() bool { return store.Resolve("k-new", "/").Anon })
+	if n := len(f.requests("a PATCH")) + len(f.requests("a POST "+eventsPath)); n != 0 {
+		t.Fatalf("follower wrote %d times", n)
+	}
+}
+
+// Once status matches, resyncs and the MODIFIED events our own patches cause write nothing more.
+func TestStatusSettles(t *testing.T) {
+	f, srv := newFake(t)
+	f.seed(policiesPath, policyObj("default", 3))
+	f.seed(tenantsPath, tenantObj("acme", "pro"))
+	f.seed(secretsPath, secretObj("acme-key", "k-acme"))
+	var leader atomic.Bool
+	leader.Store(true)
+	startController(t, clientFor(srv, "a"), "a", &leader)
+	waitFor(t, "converged", func() bool {
+		c, _ := condition(f.get(tenantsPath, "acme"))
+		p, _ := condition(f.get(policiesPath, "default"))
+		return c == "True/Active" && p == "True/Valid" && status(f.get(policiesPath, "default"), "activeReplicas") == 1
+	})
+	time.Sleep(60 * time.Millisecond) // a pass already running when we looked can still land
+	patches, events := len(f.requests("PATCH")), len(f.requests("POST "+eventsPath))
+	time.Sleep(150 * time.Millisecond) // about 7 resyncs
+	if p, e := len(f.requests("PATCH")), len(f.requests("POST "+eventsPath)); p != patches || e != events {
+		t.Fatalf("idle controller wrote %d patches and %d events", p-patches, e-events)
+	}
+	if events != 1 {
+		t.Fatalf("%d events for one applied generation, want 1", events)
+	}
+	lt := f.get(tenantsPath, "acme")["status"].(obj)["conditions"].([]any)[0].(obj)["lastTransitionTime"]
+	f.seed(tenantsPath, tenantObj("acme", "pro")) // a no-op re-apply bumps generation only
+	waitFor(t, "observedGeneration 2", func() bool { return status(f.get(tenantsPath, "acme"), "observedGeneration") == 2 })
+	if got := f.get(tenantsPath, "acme")["status"].(obj)["conditions"].([]any)[0].(obj)["lastTransitionTime"]; got != lt {
+		t.Fatalf("lastTransitionTime moved %v -> %v without a status change", lt, got)
+	}
+}
+
+// Autopilot bans and quota alerts become Events, from the leader only.
+func TestEventsFromLeaderOnly(t *testing.T) {
+	f, srv := newFake(t)
+	f.seed(policiesPath, policyObj("default", 3))
+	f.seed(tenantsPath, tenantObj("acme", "pro"))
+	var leader atomic.Bool
+	k, _ := startController(t, clientFor(srv, "a"), "a", &leader)
+	<-k.Ready()
+	ctx := context.Background()
+	until := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
+	k.Banned(ctx, "192.0.2.7", "storm", until)
+	k.QuotaAlert(ctx, "acme", 800, 1000)
+	if n := len(f.requests("POST " + eventsPath)); n != 0 {
+		t.Fatalf("follower sent %d events", n)
+	}
+	leader.Store(true)
+	k.Banned(ctx, "192.0.2.7", "storm", until)
+	k.QuotaAlert(ctx, "acme", 800, 1000)
+	k.QuotaAlert(ctx, "nobody", 1, 1) // no Tenant object to attach it to: dropped
+	ban, quota := f.event("TenantBanned"), f.event("QuotaAlert")
+	if ban == nil || ban["involvedObject"].(obj)["kind"] != "RateLimitPolicy" || ban["type"] != "Warning" ||
+		!strings.Contains(ban["message"].(string), "192.0.2.7 banned until 2026-11-10T13:00:00Z (storm)") {
+		t.Fatalf("ban event %v", ban)
+	}
+	if quota == nil || quota["involvedObject"].(obj)["kind"] != "Tenant" || quota["involvedObject"].(obj)["uid"] != "uid-acme" {
+		t.Fatalf("quota event %v", quota)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := map[any]int{}
+	for _, e := range f.objs[eventsPath] {
+		n[e["reason"]]++
+	}
+	if n["TenantBanned"] != 1 || n["QuotaAlert"] != 1 {
+		t.Fatalf("events by reason %v", n)
+	}
+}
