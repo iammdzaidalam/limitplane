@@ -167,7 +167,7 @@ func TestOpenAIRequestShape(t *testing.T) {
 	}
 	s := New(Config{Provider: p})
 	n := s.narrate(context.Background(), "role", "task", sampleFacts)
-	if n.Text != "Burst of 20 used up [F1]." || n.Model != "openai/llama-3.3-70b" {
+	if n.Text != "Burst of 20 used up [F1]." || n.Model != "127.0.0.1/llama-3.3-70b" {
 		t.Fatalf("%+v", n)
 	}
 	b := f.bodies[0]
@@ -303,5 +303,19 @@ func TestNoProvider(t *testing.T) {
 	s.WriteMetrics(&m)
 	if strings.Contains(m.String(), "} 1") {
 		t.Fatalf("rules-only answers aren't fallbacks:\n%s", m.String())
+	}
+}
+
+func TestOpenAIName(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://api.groq.com/openai/v1": "groq/m",
+		"https://api.openai.com/v1":      "openai/m",
+		"http://localhost:11434/v1":      "localhost/m",
+		"http://10.0.0.5:8000/v1":        "10.0.0.5/m",
+		"":                               "openai/m",
+	} {
+		if got := (&OpenAI{BaseURL: base, Model: "m"}).Name(); got != want {
+			t.Errorf("%q: %q, want %q", base, got, want)
+		}
 	}
 }

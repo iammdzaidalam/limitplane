@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -148,7 +150,19 @@ type OpenAI struct {
 	HTTP                *http.Client
 }
 
-func (o *OpenAI) Name() string { return "openai/" + o.Model }
+// Name labels answers with the host's name, so Groq shows as groq/<model> rather than openai/.
+func (o *OpenAI) Name() string {
+	host := "openai"
+	if u, err := url.Parse(o.BaseURL); err == nil && u.Hostname() != "" {
+		host = u.Hostname() // an IP or a single label (localhost, ollama) stays whole
+		if _, err := netip.ParseAddr(host); err != nil {
+			if parts := strings.Split(host, "."); len(parts) > 1 {
+				host = parts[len(parts)-2] // api.groq.com -> groq
+			}
+		}
+	}
+	return host + "/" + o.Model
+}
 
 func (o *OpenAI) Complete(ctx context.Context, r Request) (Reply, error) {
 	body := map[string]any{

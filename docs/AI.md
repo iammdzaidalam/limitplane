@@ -29,7 +29,7 @@ Keys are read from the environment only, never from flags, so they don't show up
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... limitplane
-limitplane --ai-base-url https://api.groq.com/openai/v1 --ai-model llama-3.3-70b-versatile   # LIMITPLANE_AI_KEY=gsk_...
+limitplane --ai-base-url https://api.groq.com/openai/v1 --ai-model openai/gpt-oss-120b   # LIMITPLANE_AI_KEY=gsk_...
 limitplane --ai-base-url http://localhost:11434/v1 --ai-model llama3.2                     # Ollama, no key
 ```
 
