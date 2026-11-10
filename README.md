@@ -43,7 +43,9 @@ says why (`burst`, `monthly`, `banned`, ...). The dashboard's admin key is print
 To protect a site you already run, point LimitPlane at it and send your traffic through LimitPlane:
 
 ```bash
-limitplane --upstream http://localhost:3000 --config limitplane.example.json --redis redis://localhost:6379
+limitplane --upstream http://localhost:3000 \
+  --config limitplane.example.json \
+  --redis redis://localhost:6379
 ```
 
 The dashboard then moves to `/_limitplane/` so it can't clash with your site's own pages.
