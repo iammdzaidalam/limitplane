@@ -1,6 +1,6 @@
 # LimitPlane
 
-[![ci](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml/badge.svg)](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml)
+[![ci](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml/badge.svg)](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml) · [site](https://limitplane-eight.vercel.app)
 
 A rate limiter you put in front of any site or API. It prices requests by cost
 (a health check is 1 unit, an AI call is 5), enforces a burst budget and a monthly quota per
