@@ -1,101 +1,210 @@
 # LimitPlane
 
-[![ci](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml/badge.svg)](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml) · [site](https://limitplane-eight.vercel.app)
+[![ci](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml/badge.svg)](https://github.com/iammdzaidalam/limitplane/actions/workflows/ci.yml) · [Website](https://limitplane-eight.vercel.app) · [Releases](https://github.com/iammdzaidalam/limitplane/releases)
 
-A rate limiter you put in front of any site or API. It prices requests by cost
-(a health check is 1 unit, an AI call is 5), enforces a burst budget and a monthly quota per
-tenant, shares limits across replicas through Redis, bans abusive clients automatically,
-and shows every decision on a live dashboard. Go, standard library only.
+LimitPlane is a rate limiter you put in front of a website or API. For every request it decides
+whether the caller still has budget left, and tells them clearly when they don't.
 
-## Run it
+- **Requests have a price.** A health check might cost 1 unit and an AI call 5, so expensive routes
+  use up the budget faster.
+- **Every customer gets a plan.** Each plan has a short-term budget (how fast you may go) and a
+  monthly quota (how much you may use in total).
+- **Limits hold across servers.** Run as many copies as you like; they share one budget through Redis.
+- **Abusers get banned automatically**, on every copy at once, and can be dropped at the network
+  card before they cost any CPU.
+- **You can see everything.** A live dashboard shows each decision, and "why was this blocked?"
+  gets a plain answer.
+
+Written in Go with only the standard library: the main program has no third-party packages.
+
+## Try it in a minute
 
 ```bash
 go install github.com/iammdzaidalam/limitplane/cmd/limitplane@latest
-
-limitplane                                    # demo app + dashboard on :8080
-limitplane --upstream http://localhost:3000   # protect an existing site
-limitplane --config limitplane.example.json --redis redis://localhost:6379
+limitplane            # demo API + dashboard on http://localhost:8080
 ```
 
-In proxy mode the dashboard lives at `/_limitplane/`. The admin key is printed once at startup
-unless you pass `--admin-key`.
-
-## How a request is decided
-
-```
-who (API key -> tenant, tier) -> cost (longest route prefix) -> one check: ban? monthly? burst? -> headers
+```bash
+curl -i localhost:8080/v1/ping                               # no key: the free plan
+curl -i -H "X-Api-Key: demo-pro-key" localhost:8080/v1/ping   # a customer on the pro plan
 ```
 
-The check writes nothing unless every part passes, so a burst reject never counts against the quota
-and a monthly reject never uses up burst. When both would fail, monthly wins: it holds until the 1st.
-Every response carries `RateLimit-Limit/Remaining/Reset`. A block returns `429` with `Retry-After`
-and a JSON body that says why.
-
-## Design
-
-- **GCRA** instead of a token bucket: one int64 per key, no float math, sharded in memory with zero allocations.
-- **Redis, one round trip:** one Lua script checks the monthly cap and GCRA, then writes both counters. It reads Redis `TIME`, so replica clock skew can't leak burst and the month rolls over on one clock. A tenant's keys share a hash tag (`lp:{acme}:r`, `lp:{acme}:q:2026-10`), so the script touches one Cluster slot.
-- **Redis Cluster:** `--redis redis+cluster://h1:6379,h2:6379`. The client routes by CRC16 slot from `CLUSTER SLOTS` with a pool per node, follows MOVED and ASK (at most 3 redirects), and loads scripts per node. A dead master degrades only the tenants in its slots. See [docs/REDIS.md](docs/REDIS.md).
-- **Metrics:** `/metrics` is public unless you set `--metrics-key` (or `LIMITPLANE_METRICS_KEY`); scrapers then send `Authorization: Bearer <key>`. It lists tenant ids, so set it in proxy mode.
-- **Redis down:** a circuit breaker routes to the local limiter and marks decisions `degraded`. Each replica then gets 1/n of the budget (n from `--replicas` / `LIMITPLANE_REPLICAS`, or counted from heartbeat Leases with `--kube`), so the fleet still admits about one budget. A Redis that isn't up at startup is retried in the background instead of failing the boot. `--fail-closed` returns 503 instead.
-- **Shared bans:** a ban (IP or CIDR) made by any replica, or from the dashboard, holds on all of them. It is written to one Redis hash and published on a channel every replica subscribes to, so it arrives in about a millisecond; a 2s sync repairs anything missed. Requests check bans in process (one map lookup per prefix length in use), so a banned flood never reaches Redis and the script never needs a cross-slot key. Bans made while Redis is down are pushed, with their remaining TTL, when it is back.
-- **Autopilot:** bans a client after repeated burst blocks, alerts at 80% of a monthly quota (also exported as `limitplane_quota_used_ratio`), and labels clients (human, bot, crawler, retry bug) from request timing. The labels are a heuristic, not a model. A tier can opt in to lanes (`"lanes": {"human": 2, "retry_bug": 0.25}`), which scale only the client's burst tolerance: the label is easy to game, so it may reshape bursts but never raise the sustained rate or the monthly quota.
-- **Organisations:** owners, admins and viewers sign in with email and password (PBKDF2, revocable tokens) and see only their org's tenants; an org's optional monthly budget is shared by its tenants and checked in the same Lua call. See [docs/ORGS.md](docs/ORGS.md).
-- **Explain and ask:** "why was this blocked?" for any decision, client or tenant, and an ops chat over remembered incidents (bans, storms, quota alerts, outages, policy changes). Rules write every answer; a model (Anthropic, or any OpenAI-compatible API) is optional and may only rephrase cited facts, with client IPs hashed. Scoped to the caller's org like every other read. See [docs/AI.md](docs/AI.md).
-- **Hot reload:** the policy is validated, then swapped atomically (file change or `SIGHUP`).
-- `X-Forwarded-For` is trusted only with `--trust-proxy`, and then only the right-most untrusted hop.
-
-Numbers are in [BENCHMARKS.md](BENCHMARKS.md).
+Every response says where you stand:
 
 ```
-            packets                 HTTP                                   one Lua call per request
-client ──▶ [ XDP: bans, floods ] ──▶ [ gateway: ban → monthly → burst ] ──▶ Redis / Redis Cluster
-              optional, xdp/            │ every replica, any number          ▲ bans: hash + pub/sub
-                                        ├─▶ upstream (proxy mode)            │
-                                        └─▶ dashboard, SSE, /metrics         │
-                           Kubernetes: RateLimitPolicy / Tenant CRDs ──▶ hot swap on every replica
+RateLimit-Limit: 100
+RateLimit-Remaining: 99
+RateLimit-Reset: 1
 ```
+
+Send too many and you get `429 Too Many Requests`, a `Retry-After` header and a JSON body that
+says why (`burst`, `monthly`, `banned`, ...). The dashboard's admin key is printed at startup.
+
+To protect a site you already run, point LimitPlane at it and send your traffic through LimitPlane:
+
+```bash
+limitplane --upstream http://localhost:3000 --config limitplane.example.json --redis redis://localhost:6379
+```
+
+The dashboard then moves to `/_limitplane/` so it can't clash with your site's own pages.
+
+## Architecture
+
+```
+                         ┌─────────────────────── your servers ───────────────────────┐
+                         │                                                            │
+ clients ──▶ [ XDP ] ──▶ │   LimitPlane    LimitPlane    LimitPlane   (any number) ───┼──▶ your app
+             optional:   │        │              │             │                      │
+             drops banned│        └──────────────┼─────────────┘                      │
+             IPs and     │                       ▼                                    │
+             floods at   │      Redis or Redis Cluster: shared budgets and bans       │
+             the NIC     │                                                            │
+                         └────────────────────────────────────────────────────────────┘
+      each copy serves: dashboard · live feed · /metrics       Kubernetes: policy as resources
+```
+
+Every copy of LimitPlane is identical. Redis holds the shared counters, so it doesn't matter which
+copy a request lands on. There are three ways to put it in your traffic path:
+
+| Mode | How | When to use it |
+|---|---|---|
+| Proxy | `--upstream URL`: LimitPlane forwards allowed requests to your app | simplest setup |
+| Forward auth | Envoy, nginx or Traefik ask LimitPlane "allow this?" and route the request themselves | you already run one of those ([docs/AUTHZ.md](docs/AUTHZ.md)) |
+| Demo | no flags: a built-in sample API | trying it out |
+
+## What happens to one request
+
+```
+1. Who is it?          API key → customer and plan (no key → the anonymous plan)
+2. What does it cost?  the longest matching route, e.g. /v1/generate = 5 units
+3. One check:          banned? → monthly quota left? → org budget left? → short-term budget left?
+4. Answer:             pass it on with RateLimit-* headers, or 429 with the reason
+```
+
+Step 3 is a single trip to Redis. Nothing is charged unless every part passes, so being blocked
+for going too fast never eats into the monthly quota.
+
+The short-term budget uses **GCRA**. It behaves like a token bucket but stores just one number per
+customer: the time at which their budget will be full again. That makes it cheap (about 45 ns in
+memory, with no allocations) and exact.
+
+## Features
+
+**Plans and prices.** Plans, route costs and API keys live in one JSON file. Edits are checked and
+applied without a restart; a bad file is rejected and the old one keeps running.
+
+```json
+{
+  "tiers": {
+    "free": { "rate": { "limit": 5,  "period": "1s", "burst": 10 },  "monthly": 10000 },
+    "pro":  { "rate": { "limit": 50, "period": "1s", "burst": 100 }, "monthly": 1000000 }
+  },
+  "routes": [{ "prefix": "/v1/generate", "cost": 5 }],
+  "keys": { "demo-pro-key": { "id": "globex", "tier": "pro" } },
+  "anonymous": "free"
+}
+```
+
+`limit` per `period` is the steady rate, `burst` is how much can be spent at once, and `monthly`
+is the total for the calendar month (0 means no cap).
+
+**Shared limits.** With `--redis`, every copy shares one budget. The check runs as one script inside
+Redis using Redis's own clock, so servers whose clocks drift apart can't hand out extra requests.
+Redis Cluster works too: `--redis redis+cluster://h1:6379,h2:6379`.
+
+**When Redis goes down.** LimitPlane doesn't just let everything through. Each copy limits on its
+own with its fair share of the budget (1/n for n copies), marks decisions as `degraded`, and goes
+back to Redis when it returns. Use `--fail-closed` to answer 503 instead.
+
+**Bans.** Ban an IP or a whole range from the dashboard, or let autopilot do it. A ban reaches every
+copy in about a millisecond and is checked in memory, so a banned flood never touches Redis. Bans
+made while Redis is down are shared once it's back.
+
+**Autopilot.** Bans clients that keep hammering, warns at 80% of a monthly quota, and labels clients
+by how they behave (human, bot, crawler, retry bug). A plan can give a label a little more or less
+burst room, but never a higher steady rate or quota, because labels are only guesses.
+
+**Organisations.** Teams sign in with email and password, have owner, admin or viewer roles, and see
+only their own customers. An org can have one monthly budget shared by all its customers.
+See [docs/ORGS.md](docs/ORGS.md).
+
+**Explain and ask.** Pick any blocked request, customer or client and get a short explanation of
+which limit stopped it and the numbers behind it. An ops chat answers questions such as "what
+happened last night?" from remembered incidents (bans, floods, quota alerts, outages). The answers
+are built from rules. An AI model (Anthropic, or any OpenAI-compatible API such as Groq or Ollama)
+is optional and may only reword the facts it is given; client IPs are hashed first.
+See [docs/AI.md](docs/AI.md).
+
+**Kubernetes.** With `--kube`, the policy and customers become Kubernetes resources
+(`RateLimitPolicy`, `Tenant`) that every copy watches. One copy is elected leader and writes status
+back. See [docs/OPERATOR.md](docs/OPERATOR.md).
+
+**XDP fast path (Linux, optional).** A small eBPF program drops banned IPs and packet floods inside
+the network driver, before Linux spends any work on them. See [docs/XDP.md](docs/XDP.md).
+
+**Metrics.** Prometheus metrics at `/metrics`, protected with `--metrics-key` if you set one.
+
+## Tested for real
+
+Besides the unit tests, each part has a script that runs it against the real thing:
+
+| Command | What it shows |
+|---|---|
+| `make prove` | two copies behind nginx share one limit |
+| `make prove-cluster` | a 3-node Redis Cluster: shared limits, instant bans, a node killed and brought back |
+| `make prove-authz` | forward auth behind real Envoy, nginx and Traefik |
+| `make prove-orgs` | two orgs on two copies: isolation, a shared org budget, revoked logins |
+| `make prove-operator` | a real Kubernetes cluster (kind): Helm install, live policy edits, leader failover. Runs in CI |
+| `./xdp/test.sh` | a 2.4M packets/s flood cut to its 1,000 packets/s budget, in both XDP modes |
+
+Speed numbers are in [BENCHMARKS.md](BENCHMARKS.md). In short, on a laptop: about 45 ns for the
+short-term check and 105 ns for the full in-memory check (ban, monthly, short-term), with no
+allocations.
 
 ## Deploy
 
 ```bash
-make compose-up && make prove     # 2 replicas + Redis behind nginx; checks the limit is shared
-kubectl apply -k deploy/k8s/overlays/dev
-helm install limitplane deploy/helm/limitplane
+make compose-up                                  # Docker Compose: 2 copies, Redis and nginx
+helm install limitplane deploy/helm/limitplane   # Kubernetes, with the Helm chart
+kubectl apply -k deploy/k8s/overlays/dev         # Kubernetes, with Kustomize
 ```
 
-- [docs/DEPLOY.md](docs/DEPLOY.md): Compose, Kustomize, Helm, ingress and Gateway API.
-- [docs/AUTHZ.md](docs/AUTHZ.md): forward auth, so Envoy, ingress-nginx or Traefik ask LimitPlane per request and the traffic goes straight to your app (`--authz-addr`, `make prove-authz`).
-- [docs/REDIS.md](docs/REDIS.md): single node vs Cluster, key layout, how bans propagate, outage behaviour.
-- [docs/ORGS.md](docs/ORGS.md): orgs, members and roles, scoped views, dashboard API keys, the shared org budget (`make prove-orgs`).
-- [docs/AI.md](docs/AI.md): explanations and ops chat, grounding and privacy, model options (`--ai`), what each org can see.
-- [docs/XDP.md](docs/XDP.md): the optional eBPF fast path that drops banned sources and floods at the NIC.
-- [docs/OPERATOR.md](docs/OPERATOR.md): `--kube` mode. Policy and tenants as `RateLimitPolicy` / `Tenant` resources, every replica hot-swaps, one Lease-elected leader writes status and events. Proven on a real kind cluster (`make prove-operator`, also in CI).
+[docs/DEPLOY.md](docs/DEPLOY.md) covers each of these, plus ingress and Gateway API.
+
+## Docs
+
+| Doc | About |
+|---|---|
+| [DEPLOY.md](docs/DEPLOY.md) | Compose, Helm, Kustomize, ingress, Gateway API |
+| [AUTHZ.md](docs/AUTHZ.md) | running behind Envoy, nginx or Traefik |
+| [REDIS.md](docs/REDIS.md) | single Redis vs Cluster, how keys are laid out, outages |
+| [ORGS.md](docs/ORGS.md) | orgs, users, roles, shared budgets |
+| [AI.md](docs/AI.md) | explanations, ops chat, model options, privacy |
+| [OPERATOR.md](docs/OPERATOR.md) | Kubernetes mode |
+| [XDP.md](docs/XDP.md) | the eBPF fast path |
 
 ## Code map
 
-| Path | What |
+| Path | What's in it |
 |---|---|
-| `internal/limiter` | GCRA, monthly quota, bans, Redis script, fallback breaker |
-| `internal/redisx` | RESP2 client: pool, Cluster routing, pub/sub |
-| `internal/gateway` | the middleware: who, cost, check, headers |
-| `internal/policy` | policy file, validation, atomic hot swap |
-| `internal/autopilot` | storm bans, quota alerts, client labels |
-| `internal/org` | orgs, users, roles, dashboard keys: memory, file or Redis |
-| `internal/ai` | explanations, incident memory (BM25), ops chat, model clients |
-| `internal/server` | admin API, JWT, SSE hub, metrics, dashboard |
-| `internal/kube` | stdlib Kubernetes client, watches, Lease election |
-| `web/`, `site/` | dashboard (embedded) and landing page, no build step |
-| `xdp/` | eBPF program and loader, its own module |
-| `deploy/` | Kustomize, Helm chart, CRDs, observability, Gateway API examples |
+| `cmd/limitplane` | the program: flags and wiring |
+| `internal/limiter` | GCRA, monthly quotas, bans, the Redis script, the fallback for when Redis is down |
+| `internal/redisx` | a small Redis client: connection pool, Cluster routing, pub/sub |
+| `internal/gateway` | the per-request logic (who, cost, check, headers) and forward auth |
+| `internal/policy` | the policy file: parsing, validation, live reload |
+| `internal/autopilot` | automatic bans, quota alerts, client labels |
+| `internal/org` | orgs, users, roles, dashboard keys |
+| `internal/ai` | explanations, incident memory, ops chat, model clients |
+| `internal/server` | admin API, login, live feed, metrics, dashboard |
+| `internal/kube` | a small Kubernetes client, watches, leader election |
+| `web/`, `site/` | the dashboard (built into the binary) and the website |
+| `xdp/` | the eBPF program and its loader (a separate Go module) |
+| `deploy/` | Helm chart, Kustomize, Kubernetes resources, Prometheus alerts, Gateway API examples |
 
 ## Develop
 
 ```bash
-make test    # go test -race ./...
+make test    # all tests, with the race detector
 make lint    # go vet + gofmt
-make bench
-make prove-cluster   # 3-master Redis Cluster, two gateways
-make prove-operator  # the operator on a real kind cluster, installed with the Helm chart
-./xdp/test.sh         # XDP proof in a privileged Docker container
+make bench   # benchmarks
 ```
